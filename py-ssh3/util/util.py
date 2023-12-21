@@ -222,3 +222,53 @@ def generate_cert(priv: crypto.PrivateKey) -> Tuple[x509.Certificate, Optional[E
         cert = x509.C
     except Exception as e:
         return None, e
+
+def parse_ssh_string(buf):
+    """ Parses an SSH formatted string from the buffer. """
+    length = int.from_bytes(buf.read(4), byteorder='big')
+    return buf.read(length).decode('utf-8')
+
+def var_int_len(value):
+    """ Calculates the length of a variable integer. """
+    if value <= 0xFF:
+        return 1
+    elif value <= 0xFFFF:
+        return 2
+    elif value <= 0xFFFFFFFF:
+        return 4
+    else:
+        return 8
+
+def var_int_to_bytes(value):
+    """ Converts a variable integer to bytes. """
+    if value <= 0xFF:
+        return value.to_bytes(1, byteorder='big')
+    elif value <= 0xFFFF:
+        return value.to_bytes(2, byteorder='big')
+    elif value <= 0xFFFFFFFF:
+        return value.to_bytes(4, byteorder='big')
+    else:
+        return value.to_bytes(8, byteorder='big')
+
+def read_var_int(buf):
+    """ Reads a variable-length integer from the buffer. """
+    first_byte = buf.read(1)[0]
+    if first_byte <= 0xFF:
+        return first_byte
+    elif first_byte <= 0xFFFF:
+        return int.from_bytes(buf.read(1), byteorder='big', signed=False) + (first_byte << 8)
+    elif first_byte <= 0xFFFFFFFF:
+        return int.from_bytes(buf.read(3), byteorder='big', signed=False) + (first_byte << 24)
+    else:
+        return int.from_bytes(buf.read(7), byteorder='big', signed=False) + (first_byte << 56)
+
+def write_ssh_string(buf, value):
+    """ Writes an SSH formatted string into the buffer. """
+    encoded_value = value.encode('utf-8')
+    buf.extend(len(encoded_value).to_bytes(4, byteorder='big'))
+    buf.extend(encoded_value)
+    return len(encoded_value) + 4
+
+def read_boolean(buf):
+    """ Reads a boolean value from the buffer. """
+    return buf.read(1)[0] != 0

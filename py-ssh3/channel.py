@@ -12,6 +12,8 @@ from aioquic.quic.stream import QuicStreamReceiver
 import io 
 import socket
 
+SSH_FRAME_TYPE = 0xaf3627e6
+
 class ChannelOpenFailure(Exception):
     def __init__(self, reason_code, error_msg):
         self.reason_code = reason_code # uint64
@@ -295,7 +297,7 @@ class TCPForwardingChannelImpl(ChannelImpl):
             
 def build_header(conversation_stream_id: int, channel_type: str, max_packet_size: int, additional_bytes: Optional[bytes]) -> bytes:
     channel_type_buf = util.write_ssh_string(channel_type)
-    buf = util.append_var_int(b'', 0xaf3627e6)
+    buf = util.append_var_int(b'', SSH_FRAME_TYPE)
     buf += util.append_var_int(buf, conversation_stream_id)
     buf += channel_type_buf
     buf += util.append_var_int(buf, max_packet_size)
