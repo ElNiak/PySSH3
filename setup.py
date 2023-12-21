@@ -13,7 +13,8 @@ setup(
         "cryptography",
         "aioquic",
         "http3",
-        "authlib"
+        "authlib",
+        "PyCryptodome"
     ],
 )
 
