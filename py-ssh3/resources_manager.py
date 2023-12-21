@@ -5,6 +5,9 @@ import asyncio
 import util
 import http3
 
+# type ControlStreamID = uint64
+
+
 class ConversationsManager:
     def __init__(self, connection):
         self.connection = connection

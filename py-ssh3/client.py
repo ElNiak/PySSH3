@@ -6,6 +6,7 @@ import jwt
 import paramiko
 from http import HTTPStatus
 from typing import Tuple, List
+from identity import Identity
 
 class OUDCAuthMethod:
     def __init__(self, do_pkce: bool, config):

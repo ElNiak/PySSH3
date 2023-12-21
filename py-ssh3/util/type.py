@@ -1,6 +1,3 @@
-import bytes
-import fmt
-
 # A JWT bearer token, encoded following the JWT specification
 class JWTTokenString:
     def __init__(self, token):
