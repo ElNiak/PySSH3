@@ -1,5 +1,5 @@
 #! /bin/bash
-
+# Copy paste from original SSH3 repository
 # we strongly recommend using classical certificates through e.g. letencrypt
 # however, if you want a comparable security level to OpenSSH's host keys,
 # you can use this script to generate a self-signed certificate for every host
