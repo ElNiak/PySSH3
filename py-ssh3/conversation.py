@@ -75,7 +75,7 @@ class Conversation(QuicConnectionProtocol):
     async def establish_client_conversation(self, req: http.client.HTTPRequest, round_tripper: HTTP3Client):
         round_tripper.stream_hijacker = self.stream_hijacker
 
-        response = await round_tripper.round_trip("GET", req.url, headers=req.headers)
+        response, body = await round_tripper.round_trip("GET", req.url, headers=req.headers)
         if response is None:
             return "Request failed"
 

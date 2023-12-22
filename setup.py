@@ -14,7 +14,9 @@ setup(
         "aioquic",
         "http3",
         "authlib",
-        "PyCryptodome"
+        "PyCryptodome",
+        # "h11==0.9.0",
+        # "wsproto"
     ],
 )
 
