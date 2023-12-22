@@ -1,9 +1,6 @@
-from flask import Flask, request, Response
 import base64
 import logging
 from functools import wraps
-
-app = Flask(__name__)
 
 def handle_auths(enable_password_login, default_max_packet_size, authenticated_handler_func):
     def auth_decorator(f):
@@ -42,12 +39,3 @@ def handle_basic_auth(handler_func):
 def check_credentials(username, password):
     # Placeholder for checking username and password
     return True  # Assuming credentials are valid
-
-@app.route('/your-endpoint', methods=['GET', 'POST'])
-@handle_auths(enable_password_login=True, default_max_packet_size=30000, authenticated_handler_func=None)
-def your_endpoint():
-    # Implement the logic for the specific endpoint
-    return "Endpoint logic"
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=443)

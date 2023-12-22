@@ -17,16 +17,17 @@ make env; make install;
 ## Usage
 
 ### PySSH3 server
+
 ```bash
-# TODO add arguments
-make run-server
+./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py
 ```
 
 #### Authorized keys and authorized identities 
 TODO
+
 ### PySSH3 client
 ```bash
-make run-client
+./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py
 ```
 
 #### Private-key authentication
@@ -46,3 +47,4 @@ TODO
 - [ ] Add examples
 - [ ] Add more features
 - [ ] Add threading support
+- [ ] Inspire more from [paramiko]

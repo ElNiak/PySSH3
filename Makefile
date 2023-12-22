@@ -4,9 +4,3 @@ env:
  
 install:
 	. ssh3_env/bin/activate && python3 -m pip install wheel && python3 -m pip install .
-
-run-server:
-	. ssh3_env/bin/activate && python3 py-ssh3/cli/server/main.py
-
-run-client:
-	. ssh3_env/bin/activate && python3 py-ssh3/cli/client/main.py

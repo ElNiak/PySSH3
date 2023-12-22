@@ -1,9 +1,6 @@
 import os
 import signal
-import subprocess
 import asyncio
-import socket
-import contextlib
 import signal
 import fcntl
 import struct
@@ -55,7 +52,7 @@ signals = {
     "SIGVTALRM": signal.SIGVTALRM,
     "SIGWINCH": signal.SIGWINCH,
     "SIGXCPU": signal.SIGXCPU,
-    "SIGXFSZ": signal.SIGXFSZ,
+    "SIGXFSZ": signal.SIGXFSZ
 }
 
 class ChannelType:
@@ -250,52 +247,52 @@ async def main():
         if not certPathExists:
             logging.error(f"the \"{args.certPath}\" certificate file does not exist")
         if not keyPathExists:
-            logging.error(f"the \"{args.keyPath}\" certificate private key file does not exist")
+            log.error(f"the \"{args.keyPath}\" certificate private key file does not exist")
         if not certPathExists or not keyPathExists:
-            logging.error("If you have no certificate and want a security comparable to traditional SSH host keys, you can generate a self-signed certificate using the -generate-selfsigned-cert arg or using the following script:")
-            logging.error("https://github.com/francoismichel/ssh3/blob/main/generate_openssl_selfsigned_certificate.sh")
+            log.error("If you have no certificate and want a security comparable to traditional SSH host keys, you can generate a self-signed certificate using the -generate-selfsigned-cert arg or using the following script:")
+            log.error("https://github.com/ElNiak/py-ssh3/blob/main/generate_openssl_selfsigned_certificate.sh")
             os.Exit(-1)
     else:
         if certPathExists:
-            logging.error(f"asked for generating a certificate but the \"{args.certPath}\" file already exists")
+            log.error(f"asked for generating a certificate but the \"{args.certPath}\" file already exists")
         if keyPathExists:
-            logging.error(f"asked for generating a private key but the \"{args.keyPath}\" file already exists")
+            log.error(f"asked for generating a private key but the \"{args.keyPath}\" file already exists")
         if certPathExists or keyPathExists:
             os.Exit(-1)
         pubkey, privkey, err = util.generate_key()
         if err != None:
-            logging.error(f"could not generate private key: {err}")
+            log.error(f"could not generate private key: {err}")
             os.Exit(-1)
         cert, err = util.GenerateCert(privkey)
         if err != None:
-            logging.error(f"could not generate certificate: {err}")
+            log.error(f"could not generate certificate: {err}")
             os.Exit(-1)
 
         err = util.DumpCertAndKeyToFiles(cert, pubkey, privkey, args.certPath, args.keyPath)
         if err != None:
-            logging.error(f"could not save certificate and key to files: {err}")
+            log.error(f"could not save certificate and key to files: {err}")
             os.Exit(-1)
 
     if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
+        log.basicConfig(level=log.DEBUG)
     else:
         log_level = os.getenv("SSH3_LOG_LEVEL")
         if log_level:
-            numeric_level = getattr(logging, log_level.upper(), None)
+            numeric_level = getattr(log, log_level.upper(), None)
             if not isinstance(numeric_level, int):
                 raise ValueError(f"Invalid log level: {log_level}")
-            logging.basicConfig(level=numeric_level)
+            log.basicConfig(level=numeric_level)
 
         logFileName = os.getenv("SSH3_LOG_FILE")
         if logFileName == "":
             logFileName = "/var/log/ssh3.log"
         logFile = open(logFileName, "a")
-        logging.basicConfig(filename=logFile, level=logging.INFO)
+        log.basicConfig(filename=logFile, level=log.INFO)
 
     # quicConf = &quic.Config{
     #     Allow0RTT: True,
     # }
 
    
-    if __name__ == "__main__":
-        asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
