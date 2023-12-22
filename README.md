@@ -4,7 +4,7 @@ Translation of [SSH3](https://github.com/francoismichel/ssh3/tree/c39bb79cdce479
 
 ## Installation
 
-### Python 3.6
+### Python 3.6 (TODO)
 
 TODO
 
@@ -22,7 +22,27 @@ make env; make install;
 make run-server
 ```
 
+#### Authorized keys and authorized identities 
+TODO
 ### PySSH3 client
 ```bash
 make run-client
 ```
+
+#### Private-key authentication
+TODO
+#### Agent-based private key authentication
+TODO
+#### Password authentication
+TODO
+#### Config-based session establishment
+TODO
+#### OpenID Connect authentication (TODO)
+TODO
+
+## TODO
+- [ ] Add tests
+- [ ] Add documentation
+- [ ] Add examples
+- [ ] Add more features
+- [ ] Add threading support
