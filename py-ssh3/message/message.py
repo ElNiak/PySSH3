@@ -1,6 +1,6 @@
 import io
 import struct
-from util import parse_ssh_string
+from util.util import parse_ssh_string, ssh_string_len, var_int_len, append_var_int, write_ssh_string
 
 # Constants for SSH message types
 SSH_MSG_DISCONNECT = 1
@@ -41,6 +41,38 @@ class Message:
 
     def length(self):
         pass
+
+class ChannelRequestMessage(Message):
+    def __init__(self, want_reply, channel_request):
+        self.want_reply = want_reply
+        self.channel_request = channel_request
+
+    def length(self):
+        # msg type + request type + wantReply + request content
+        return len(var_int_len(SSH_MSG_CHANNEL_REQUEST)) + \
+               ssh_string_len(self.channel_request.request_type_str()) + 1 + \
+               self.channel_request.length()
+
+    def write(self, buf):
+        if len(buf) < self.length():
+            raise ValueError(f"Buffer too small to write message for channel request of type {type(self.channel_request)}: {len(buf)} < {self.length()}")
+
+        consumed = 0
+        msg_type_buf = append_var_int(None, SSH_MSG_CHANNEL_REQUEST)
+        buf[consumed:consumed+len(msg_type_buf)] = msg_type_buf
+        consumed += len(msg_type_buf)
+
+        n = write_ssh_string(buf[consumed:], self.channel_request.request_type_str())
+        consumed += n
+
+        buf[consumed] = 1 if self.want_reply else 0
+        consumed += 1
+
+        n = self.channel_request.write(buf[consumed:])
+        consumed += n
+
+        return consumed
+
 
 class ChannelOpenConfirmationMessage(Message):
     def __init__(self, max_packet_size):

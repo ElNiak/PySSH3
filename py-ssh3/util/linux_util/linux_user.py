@@ -4,6 +4,14 @@ from crypt import crypt
 import subprocess
 import os
 
+class User:
+    def __init__(self, username, uid, gid, dir, shell):
+        self.username = username
+        self.uid = uid
+        self.gid = gid
+        self.dir = dir
+        self.shell = shell
+        
 class ShadowEntry:
     def __init__(self, username, password):
         self.username = username
@@ -26,13 +34,7 @@ def user_password_authentication(username, password):
 
 def get_user(username):
     pw = getpwnam(username)
-    return {
-        "username": pw.pw_name,
-        "uid": pw.pw_uid,
-        "gid": pw.pw_gid,
-        "dir": pw.pw_dir,
-        "shell": pw.pw_shell
-    }
+    return User(pw.pw_name, pw.pw_uid, pw.pw_gid, pw.pw_dir, pw.pw_shell)
 
 def create_command(user, command, args, login_shell=False):
     # Construct subprocess command with user environment

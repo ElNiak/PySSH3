@@ -1,6 +1,7 @@
 import io
 import struct
 from message.channel_request import *
+from util.type import *
 
 # taken from the QUIC draft
 Min = 0

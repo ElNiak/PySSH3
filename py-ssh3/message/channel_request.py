@@ -5,37 +5,7 @@ import util.type as stype
 from message import message
 from typing import Tuple
 import ipaddress
-
-class ChannelRequestMessage:
-    def __init__(self, want_reply, channel_request):
-        self.want_reply = want_reply
-        self.channel_request = channel_request
-
-    def length(self):
-        # msg type + request type + wantReply + request content
-        return len(util.var_int_len(message.SSH_MSG_CHANNEL_REQUEST)) + \
-               util.ssh_string_len(self.channel_request.request_type_str()) + 1 + \
-               self.channel_request.length()
-
-    def write(self, buf):
-        if len(buf) < self.length():
-            raise ValueError(f"Buffer too small to write message for channel request of type {type(self.channel_request)}: {len(buf)} < {self.length()}")
-
-        consumed = 0
-        msg_type_buf = util.append_var_int(None, message.SSH_MSG_CHANNEL_REQUEST)
-        buf[consumed:consumed+len(msg_type_buf)] = msg_type_buf
-        consumed += len(msg_type_buf)
-
-        n = util.write_ssh_string(buf[consumed:], self.channel_request.request_type_str())
-        consumed += n
-
-        buf[consumed] = 1 if self.want_reply else 0
-        consumed += 1
-
-        n = self.channel_request.write(buf[consumed:])
-        consumed += n
-
-        return consumed
+from message.message import ChannelRequestMessage
 
 def parse_request_message(buf):
     request_type, err = util.parse_ssh_string(buf)

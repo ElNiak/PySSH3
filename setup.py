@@ -9,12 +9,14 @@ setup(
     packages=find_packages(),
     install_requires=[
         "aiohttp",
-        "pyOpenSSL",
+        # "pyOpenSSL",
         "cryptography",
         "aioquic",
-        "http3",
+        "pyjwt"
+        # "http3",
         "authlib",
-        "PyCryptodome",
+        # "PyCryptodome",
+        "sanic"
         # "h11==0.9.0",
         # "wsproto"
     ],

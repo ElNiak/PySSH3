@@ -1,40 +1,50 @@
 import base64
 import logging
-from functools import wraps
+from aioquic.asyncio import serve
+from aioquic.asyncio.protocol import QuicConnectionProtocol
+from aioquic.quic.configuration import QuicConfiguration
+from aioquic.quic.events import HandshakeCompleted
+from aioquic.asyncio.server import HttpRequestHandler, HttpServerProtocol, Route
+from aioquic.quic.events import ProtocolNegotiated
+from typing import Callable
+import util.linux_util as linux_util
 
-def handle_auths(enable_password_login, default_max_packet_size, authenticated_handler_func):
-    def auth_decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            # Version checking logic (placeholder)
-            user_agent = request.headers.get('User-Agent')
-            logging.debug(f"Received request from User-Agent: {user_agent}")
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-            # Add more version checking and QUIC connection logic here
 
-            authorization = request.headers.get('Authorization')
-            if enable_password_login and authorization.startswith("Basic "):
-                return handle_basic_auth(authenticated_handler_func)(*args, **kwargs)
-            elif authorization.startswith("Bearer "):
-                # Additional logic for Bearer token
-                # Placeholder for bearer token handling
-                pass
-            else:
-                return Response(status=401)  # Unauthorized
+def handle_auths(enablePasswordLogin: bool, defaultMaxPacketSize: int) -> Callable:
+    async def handle_request(handler: HttpRequestHandler, event: ProtocolNegotiated):
+        request = handler._http_request_received
+        logger.debug(f"Received request from User-Agent {request.headers.get('user-agent')}")
 
-        return decorated_function
-    return auth_decorator
+        # Add your version check and logic here
 
-def handle_basic_auth(handler_func):
-    def basic_auth_decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            auth = request.authorization
-            if not auth or not check_credentials(auth.username, auth.password):
-                return Response(status=401)  # Unauthorized
-            return handler_func(auth.username, *args, **kwargs)
-        return decorated_function
-    return basic_auth_decorator
+        if not handler._quic._is_handshake_complete:
+            handler._quic.send_response(status_code=425)  # 425 Too Early
+            return
+
+        # Process the request and perform authentication
+        authorization = request.headers.get('authorization')
+        if enablePasswordLogin and authorization.startswith('Basic '):
+            await handle_basic_auth(handler, request)
+        elif authorization.startswith('Bearer '):
+            # Handle bearer authentication
+            pass
+        else:
+            handler._quic.send_response(status_code=401)  # 401 Unauthorized
+
+    return handle_request
+
+
+def handle_basic_auth(handler: HttpRequestHandler, request):
+    auth = request.headers.get('authorization')
+    username, password = base64.b64decode(auth.split(' ')[1]).decode().split(':')
+    if not linux_util.UserPasswordAuthentication(username, password):
+        handler._quic.send_response(status_code=401)  # 401 Unauthorized
+        return
+
+    # Continue with the authenticated request processing
 
 def check_credentials(username, password):
     # Placeholder for checking username and password

@@ -1,39 +1,22 @@
-import jwt
+import datetime
+import hashlib
 from typing import Tuple, List
 import contextlib
 import base64
-import crypto
-import os
-import random
-import struct
-import time
-from datetime import timedelta
 from typing import Any, Callable, Optional
 import threading
-
-import jwt
-import rsa
-from Crypto.Util.asn1 import x509
-from asn1crypto.cryptobyte import wrap
-from asn1crypto.util import int_from_bytes, read_full
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,Ed25519PublicKey
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.serialization import load_pem_private_key, Encoding, PrivateFormat, NoEncryption
-
+from cryptography.hazmat.primitives.asymmetric import rsa
 import logging
-
-
-def build_jwt_bearer_token(key, username: str, conversation) -> str:
-    # Implement JWT token generation logic
-    pass
-
-def get_config_for_host(host: str) -> Tuple[str, int, str, List]:
-    # Parse SSH config for the given host
-    pass
+import jwt
+from cryptography.hazmat.backends import default_backend
 
 class UnknownSSHPubkeyType(Exception):
-    def __init__(self, pubkey: crypto.PublicKey):
+    def __init__(self, pubkey):
         self.pubkey = pubkey
 
     def __str__(self):
@@ -73,18 +56,18 @@ def configure_logger(log_level: str) -> None:
         logging.log_level = logging.WARN
 
 
-class AcceptQueue(Generic[T]):
+class AcceptQueue(T):
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.c = threading.Condition(self.lock)
-        self.queue: List[T] = []
+        self.queue: List = []
 
-    def add(self, item: T) -> None:
+    def add(self, item) -> None:
         with self.lock:
             self.queue.append(item)
             self.c.notify()
 
-    def next(self) -> T:
+    def next(self):
         with self.lock:
             while not self.queue:
                 self.c.wait()
@@ -131,12 +114,12 @@ class DatagramsQueue:
             return self.queue.pop(0)
 
 
-def jwt_signing_method_from_crypto_pubkey(pubkey: crypto.PublicKey) -> Tuple[jwt.algorithms.SigningAlgorithm, Exception]:
+def jwt_signing_method_from_crypto_pubkey(pubkey) -> Tuple[str, Exception]:
     try:
         if isinstance(pubkey, rsa.RSAPublicKey):
-            return jwt.algorithms.RSAAlgorithm(), None
-        elif isinstance(pubkey, Ed25519PrivateKey.public_key):
-            return jwt.algorithms.Ed25519Algorithm(), None
+            return "RS256", None
+        elif isinstance(pubkey, Ed25519PublicKey):
+            return "EdDSA", None
         else:
             return None, UnknownSSHPubkeyType(pubkey)
     except Exception as e:
@@ -148,81 +131,151 @@ def sha256_fingerprint(in_bytes: bytes) -> str:
     sha256_hash.update(in_bytes)
     return base64.b64encode(sha256_hash.digest()).decode('utf-8')
 
+# def get_san_extension(cert_pem):
+#     # Load the certificate from PEM format
+#     cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
 
-def get_san_extension(cert: x509.Certificate) -> Optional[bytes]:
-    oid_extension_subject_alt_name = x509.ExtensionIdentifier.from_string("2.5.29.17")
-    for ext in cert.extensions:
-        if ext['extn_id'] == oid_extension_subject_alt_name:
-            return ext['extn_value'].native
-    return None
+#     # Look for the Subject Alternative Name extension
+#     try:
+#         san_extension = cert.extensions.get_extension_for_oid(x509.OID_SUBJECT_ALTERNATIVE_NAME)
+#         return san_extension.value
+#     except x509.ExtensionNotFound:
+#         return None
 
+# def for_each_san(der: bytes, callback: Callable[[int, bytes], Exception]) -> Optional[Exception]:
+#     try:
+#         idx = 0
+#         der_len = len(der)
+#         while idx < der_len:
+#             tag = int(der[idx])
+#             idx += 1
+#             length = int(der[idx:idx + 2])
+#             idx += 2
+#             if idx + length > der_len:
+#                 raise ValueError("x509: invalid subject alternative name")
+#             data = der[idx:idx + length]
+#             idx += length
+#             err = callback(tag, data)
+#             if err is not None:
+#                 return err
+#         return None
+#     except Exception as e:
+#         return e
 
-def for_each_san(der: bytes, callback: Callable[[int, bytes], Exception]) -> Optional[Exception]:
+# def cert_has_ip_sans(cert: x509.Certificate) -> Tuple[bool, Optional[Exception]]:
+#     SANExtension = get_san_extension(cert)
+#     if SANExtension is None:
+#         return False, None
+
+#     name_type_ip = 7
+#     ip_addresses = []
+
+#     def callback(tag: int, data: bytes) -> Optional[Exception]:
+#         if tag == name_type_ip:
+#             if len(data) == 4 or len(data) == 16:
+#                 ip_addresses.append(data)
+#             else:
+#                 return ValueError(f"x509: cannot parse IP address of length {len(data)}")
+#         return None
+
+#     err = for_each_san(SANExtension, callback)
+#     if err is not None:
+#         return False, err
+
+#     return len(ip_addresses) > 0, None
+
+def cert_has_ip_sans(cert_pem):
+    # Load the certificate from PEM format
+    cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
+
+    # Extract SAN extension
     try:
-        idx = 0
-        der_len = len(der)
-        while idx < der_len:
-            tag = int(der[idx])
-            idx += 1
-            length = int_from_bytes(der[idx:idx + 2])
-            idx += 2
-            if idx + length > der_len:
-                raise ValueError("x509: invalid subject alternative name")
-            data = der[idx:idx + length]
-            idx += length
-            err = callback(tag, data)
-            if err is not None:
-                return err
-        return None
-    except Exception as e:
-        return e
+        san_extension = cert.extensions.get_extension_for_oid(x509.OID_SUBJECT_ALTERNATIVE_NAME)
+    except x509.ExtensionNotFound as e:
+        return False, e
 
-
-def cert_has_ip_sans(cert: x509.Certificate) -> Tuple[bool, Optional[Exception]]:
-    SANExtension = get_san_extension(cert)
-    if SANExtension is None:
-        return False, None
-
-    name_type_ip = 7
-    ip_addresses = []
-
-    def callback(tag: int, data: bytes) -> Optional[Exception]:
-        if tag == name_type_ip:
-            if len(data) == 4 or len(data) == 16:
-                ip_addresses.append(data)
-            else:
-                return ValueError(f"x509: cannot parse IP address of length {len(data)}")
-        return None
-
-    err = for_each_san(SANExtension, callback)
-    if err is not None:
-        return False, err
-
+    # Check for IP addresses in the SANs
+    ip_addresses = [general_name for general_name in san_extension.value
+                    if isinstance(general_name, x509.IPAddress)]
+    
     return len(ip_addresses) > 0, None
 
 
-def generate_key() -> Tuple[crypto.PublicKey, crypto.PrivateKey, Optional[Exception]]:
+def generate_key() -> Tuple[Ed25519PublicKey, Ed25519PrivateKey, Optional[Exception]]:
     try:
         private_key = Ed25519PrivateKey.generate()
-        public_key = private_key.public_key()
+        signature = private_key.sign(b"my authenticated message") # TODO
+        public_key  = private_key.public_key()
+        # public_key.verify(signature, b"my authenticated message")
         return public_key, private_key, None
     except Exception as e:
         return None, None, e
 
 
-def generate_cert(priv: crypto.PrivateKey) -> Tuple[x509.Certificate, Optional[Exception]]:
+def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[Exception]]:
     try:
-        serial_number = random.randint(1, 2 ** 128)
-        subject = x509.Name.build({
-            'organization_name': "SSH3Organization"
-        })
-        not_before = time.gmtime()
-        not_after = time.gmtime(time.time() + timedelta(days=10 * 365).total_seconds())
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SSH3Organization"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "elniak.com"),
 
-        cert = x509.C
+        ])
+        cert = x509.CertificateBuilder(
+                ).subject_name(
+                    subject
+                ).issuer_name(
+                    issuer
+                ).public_key(
+                    priv.public_key()
+                ).serial_number(
+                    x509.random_serial_number()
+                ).not_valid_before(
+                    datetime.datetime.now(datetime.timezone.utc)
+                ).not_valid_after(
+                    # Our certificate will be valid for 10 days
+                    datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10)
+                ).add_extension(
+                    x509.SubjectAlternativeName([x509.DNSName("*"), x509.DNSName("selfsigned.ssh3")]),
+                    critical=False,
+                    # Sign our certificate with our private key
+                ).add_extension(
+                    x509.BasicConstraints(ca=True, path_length=None), 
+                    critical=True,
+                ).add_extension(
+                    x509.KeyUsage(digital_signature=True, key_encipherment=True, key_cert_sign=True,
+                                  key_agreement=False, content_commitment=False, data_encipherment=False,
+                                  crl_sign=False, encipher_only=False, decipher_only=False), 
+                    critical=True,
+                ).add_extension(
+                    x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), 
+                    critical=True,
+                )
+        
+        return cert, None
     except Exception as e:
         return None, e
 
+def dump_cert_and_key_to_files(cert: x509.Certificate, priv: Ed25519PrivateKey, cert_file: str, key_file: str) -> Optional[Exception]:
+    try:
+        pem = cert.sign(priv, hashes.SHA256()).public_bytes(encoding=serialization.Encoding.PEM)
+        with open(cert_file, "wb") as f:
+            f.write(pem)
+    except Exception as e:
+        return e
+    
+    try:
+        # Now we want to generate a cert from that root
+        # TODO check if this is correct
+        key_byte = priv.private_bytes(encoding=serialization.Encoding.PEM, 
+                                    format=serialization.PrivateFormat.TraditionalOpenSSL, 
+                                    encryption_algorithm=serialization.NoEncryption())
+        with open(key_file, "wb") as f:
+            f.write(key_byte)
+    except Exception as e:
+        return e
+    
 def parse_ssh_string(buf):
     """ Parses an SSH formatted string from the buffer. """
     length = int.from_bytes(buf.read(4), byteorder='big')
