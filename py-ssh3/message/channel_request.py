@@ -2,26 +2,8 @@ import struct
 import io
 import util.util as util
 import util.type as stype
-from message import message
 from typing import Tuple
 import ipaddress
-from message.message import ChannelRequestMessage
-
-def parse_request_message(buf):
-    request_type, err = util.parse_ssh_string(buf)
-    if err:
-        return None, err
-
-    want_reply = struct.unpack('>b', buf.read(1))[0]
-    parse_func = channel_request_parse_funcs.get(request_type)
-    if not parse_func:
-        return None, ValueError(f"Invalid request message type {request_type}")
-
-    channel_request, err = parse_func(buf)
-    if err and not isinstance(err, io.EOFError):
-        return None, err
-
-    return ChannelRequestMessage(want_reply, channel_request), err
 
 class PtyRequest:
     def __init__(self, term, char_width, char_height, pixel_width, pixel_height, encoded_terminal_modes):

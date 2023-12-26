@@ -1,15 +1,16 @@
-import asyncio
+ 
 import struct
 from typing import Tuple, Optional, Callable
 import ipaddress
 from util import *
-import message.message as ssh3
 from abc import ABC, abstractmethod
-import contextlib
-import util
-from conversation import ConversationID
+import util.type as stype
+import util.util as util
+import util.wire as wire
+from ssh.conversation import *
+from message.message import *
+from message.channel_request import *
 from aioquic.quic.stream import QuicStreamReceiver
-import io 
 import socket
 
 SSH_FRAME_TYPE = 0xaf3627e6
@@ -21,7 +22,7 @@ class ChannelOpenFailure(Exception):
         super().__init__(f"Channel open failure: reason: {reason_code}: {error_msg}")
 
 class MessageOnNonConfirmedChannel(Exception):
-    def __init__(self, message: ssh3.Message):
+    def __init__(self, message: Message):
         self.message = message
         super().__init__(f"A message of type {type(self.message)} has been received on a non-confirmed channel")
 
@@ -52,7 +53,7 @@ class ChannelInfo:
 
 class Channel(ABC):
     @abstractmethod
-    def channel_id(self) -> util.ChannelID:
+    def channel_id(self) -> stype.ChannelID:
         pass
 
     @abstractmethod
@@ -64,11 +65,11 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def next_message(self) -> 'ssh3.Message':
+    def next_message(self) -> Message:
         pass
 
     @abstractmethod
-    def receive_datagram(self, ctx: contextlib.Context) -> bytes:
+    def receive_datagram(self) -> bytes:
         pass
 
     @abstractmethod
@@ -76,7 +77,7 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def send_request(self, r: ssh3.ChannelRequestMessage) -> None:
+    def send_request(self, r: ChannelRequestMessage) -> None:
         pass
 
     @abstractmethod
@@ -92,7 +93,7 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def write_data(self, data_buf: bytes, data_type: ssh3.SSHDataType) -> int:
+    def write_data(self, data_buf: bytes, data_type: SSHDataType) -> int:
         pass
 
     @abstractmethod
@@ -108,7 +109,7 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def wait_add_datagram(self, ctx: contextlib.Context, datagram: bytes) -> None:
+    def wait_add_datagram(self, datagram: bytes) -> None:
         pass
 
     @abstractmethod
@@ -125,7 +126,7 @@ class Channel(ABC):
 
 
 class ChannelImpl(Channel):
-    def __init__(self, channel_info: ChannelInfo, recv: QuicStreamReceiver, send: io.WriteCloser):
+    def __init__(self, channel_info: ChannelInfo, recv: QuicStreamReceiver, send):
         self.channel_info = channel_info
         self.confirm_sent = False
         self.confirm_received = False
@@ -149,13 +150,13 @@ class ChannelImpl(Channel):
         self.channel_data_handler = None
         
     def __init__(self, conversation_stream_id: int, conversation_id: ConversationID, channel_id: int,
-                 channel_type: str, max_packet_size: int, recv: QuicStreamReceiver, send: io.WriteCloser,
+                 channel_type: str, max_packet_size: int, recv: QuicStreamReceiver, send,
                  datagram_sender: Callable, channel_close_listener: Callable, send_header: bool,
                  confirm_sent: bool, confirm_received: bool, datagrams_queue_size: int, additional_header_bytes: bytes):
         self.channel_info = ChannelInfo(max_packet_size, conversation_stream_id, conversation_id, channel_id, channel_type)
         self.recv = recv
         self.send = send
-        self.datagrams_queue = util.DatagramsQueue(datagrams_queue_size)  
+        self.datagrams_queue = stype.DatagramsQueue(datagrams_queue_size)  
         self.datagram_sender = datagram_sender
         self.channel_close_listener = channel_close_listener
         self.header = build_header(conversation_stream_id, channel_type, max_packet_size, additional_header_bytes) if send_header else None
@@ -187,17 +188,17 @@ class ChannelImpl(Channel):
         # The error is EOF only if no bytes were read. If an EOF happens
         # after reading some but not all the bytes, next_message returns
         # ErrUnexpectedEOF.
-        return ssh3.parse_message(self.recv)  # Assuming parse_message is defined
+        return parse_message(self.recv)  # Assuming parse_message is defined
 
     def next_message(self):
         generic_message, err = self.next_message()
         if err:
             return None, err
 
-        if isinstance(generic_message, ssh3.ChannelOpenConfirmationMessage):
+        if isinstance(generic_message, ChannelOpenConfirmationMessage):
             self.confirm_received = True
             return self.next_message()
-        elif isinstance(generic_message, ssh3.ChannelOpenFailureMessage):
+        elif isinstance(generic_message, ChannelOpenFailureMessage):
             return None, ChannelOpenFailure(generic_message.reason_code, generic_message.error_message_utf8)
 
         if not self.confirm_sent:
@@ -218,7 +219,7 @@ class ChannelImpl(Channel):
             return 0, err
         written = 0
         while data_buf:
-            data_msg = ssh3.DataOrExtendedDataMessage(data_type, "")
+            data_msg = DataOrExtendedDataMessage(data_type, "")
             empty_msg_len = data_msg.length()
             msg_len = min(self.channel_info.max_packet_size - empty_msg_len, len(data_buf))
 
@@ -246,14 +247,14 @@ class ChannelImpl(Channel):
         self.send.write(buf)
         return None
 
-    def wait_add_datagram(self, ctx, datagram):
-        return self.datagrams_queue.wait_add(ctx, datagram)
+    def wait_add_datagram(self, datagram):
+        return self.datagrams_queue.wait_add(datagram)
 
     def add_datagram(self, datagram):
         return self.datagrams_queue.add(datagram)
 
-    def receive_datagram(self, ctx):
-        return self.datagrams_queue.wait_next(ctx)
+    def receive_datagram(self):
+        return self.datagrams_queue.wait_next()
 
     def send_datagram(self, datagram):
         self.maybe_send_header()
@@ -297,10 +298,10 @@ class TCPForwardingChannelImpl(ChannelImpl):
             
 def build_header(conversation_stream_id: int, channel_type: str, max_packet_size: int, additional_bytes: Optional[bytes]) -> bytes:
     channel_type_buf = util.write_ssh_string(channel_type)
-    buf = util.append_var_int(b'', SSH_FRAME_TYPE)
-    buf += util.append_var_int(buf, conversation_stream_id)
+    buf = wire.AppendVarInt(b'', SSH_FRAME_TYPE)
+    buf += wire.AppendVarInt(buf, conversation_stream_id)
     buf += channel_type_buf
-    buf += util.append_var_int(buf, max_packet_size)
+    buf += wire.AppendVarInt(buf, max_packet_size)
     if additional_bytes:
         buf += additional_bytes
     return buf
@@ -308,14 +309,14 @@ def build_header(conversation_stream_id: int, channel_type: str, max_packet_size
 
 def build_forwarding_channel_additional_bytes(remote_addr: ipaddress.IPv4Address, port: int) -> bytes:
     buf = b''
-    address_family = util.SSHAFIpv4 if len(remote_addr) == 4 else util.SSHAFIpv6
-    buf += util.append_var_int(buf, address_family)
+    address_family = stype.SSHAFIpv4 if len(remote_addr) == 4 else stype.SSHAFIpv6
+    buf += wire.AppendVarInt(buf, address_family)
     buf += remote_addr
     port_buf = struct.pack('>H', port)  # Big-endian format for uint16
     buf += port_buf
     return buf
 
-def parse_header(channel_id: int, reader: util.Reader) -> Tuple[int, str, int, Optional[Exception]]:
+def parse_header(channel_id: int, reader) -> Tuple[int, str, int, Optional[Exception]]:
     conversation_control_stream_id, err = util.read_var_int(reader)
     if err:
         return 0, "", 0, err
@@ -332,9 +333,9 @@ def parse_forwarding_header(channel_id, buf):
     if err:
         return None, 0, err
 
-    if address_family == util.SSHAFIpv4:
+    if address_family == stype.SSHAFIpv4:
         address = buf.read(4)
-    elif address_family == util.SSHAFIpv6:
+    elif address_family == stype.SSHAFIpv6:
         address = buf.read(16)
     else:
         return None, 0, ValueError(f"Invalid address family: {address_family}")
@@ -360,18 +361,18 @@ def parse_tcp_forwarding_header(channel_id, buf):
     return socket.getaddrinfo(address, port, socket.AF_UNSPEC, socket.SOCK_STREAM), None
 
 # Define types for SSH channel request handlers
-PtyReqHandler = Callable[[Channel, ssh3.PtyRequest, bool], None]
-X11ReqHandler = Callable[[Channel, ssh3.X11Request, bool], None]
-ShellReqHandler = Callable[[Channel, ssh3.ShellRequest, bool], None]
-ExecReqHandler = Callable[[Channel, ssh3.ExecRequest, bool], None]
-SubsystemReqHandler = Callable[[Channel, ssh3.SubsystemRequest, bool], None]
-WindowChangeReqHandler = Callable[[Channel, ssh3.WindowChangeRequest, bool], None]
-SignalReqHandler = Callable[[Channel, ssh3.SignalRequest, bool], None]
-ExitStatusReqHandler = Callable[[Channel, ssh3.ExitStatusRequest, bool], None]
-ExitSignalReqHandler = Callable[[Channel, ssh3.ExitSignalRequest, bool], None]
+PtyReqHandler = Callable[[Channel, PtyRequest, bool], None]
+X11ReqHandler = Callable[[Channel, X11Request, bool], None]
+ShellReqHandler = Callable[[Channel, ShellRequest, bool], None]
+ExecReqHandler = Callable[[Channel, ExecRequest, bool], None]
+SubsystemReqHandler = Callable[[Channel, SubsystemRequest, bool], None]
+WindowChangeReqHandler = Callable[[Channel, WindowChangeRequest, bool], None]
+SignalReqHandler = Callable[[Channel, SignalRequest, bool], None]
+ExitStatusReqHandler = Callable[[Channel, ExitStatusRequest, bool], None]
+ExitSignalReqHandler = Callable[[Channel, ExitSignalRequest, bool], None]
 
 # Define a type for handling SSH channel data
-ChannelDataHandler = Callable[[Channel, ssh3.SSHDataType, str], None]
+ChannelDataHandler = Callable[[Channel, SSHDataType, str], None]
 
 # Define an interface for channel close listeners
 class ChannelCloseListener:

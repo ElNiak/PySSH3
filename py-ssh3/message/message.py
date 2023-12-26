@@ -1,34 +1,9 @@
 import io
 import struct
-from util.util import parse_ssh_string, ssh_string_len, var_int_len, append_var_int, write_ssh_string
-
-# Constants for SSH message types
-SSH_MSG_DISCONNECT = 1
-SSH_MSG_IGNORE = 2
-SSH_MSG_UNIMPLEMENTED = 3
-SSH_MSG_DEBUG = 4
-SSH_MSG_SERVICE_REQUEST = 5
-SSH_MSG_SERVICE_ACCEPT = 6
-SSH_MSG_KEXINIT = 20
-SSH_MSG_NEWKEYS = 21
-SSH_MSG_USERAUTH_REQUEST = 50
-SSH_MSG_USERAUTH_FAILURE = 51
-SSH_MSG_USERAUTH_SUCCESS = 52
-SSH_MSG_USERAUTH_BANNER = 53
-SSH_MSG_GLOBAL_REQUEST = 80
-SSH_MSG_REQUEST_SUCCESS = 81
-SSH_MSG_REQUEST_FAILURE = 82
-SSH_MSG_CHANNEL_OPEN = 90
-SSH_MSG_CHANNEL_OPEN_CONFIRMATION = 91
-SSH_MSG_CHANNEL_OPEN_FAILURE = 92
-SSH_MSG_CHANNEL_WINDOW_ADJUST = 93
-SSH_MSG_CHANNEL_DATA = 94
-SSH_MSG_CHANNEL_EXTENDED_DATA = 95
-SSH_MSG_CHANNEL_EOF = 96
-SSH_MSG_CHANNEL_CLOSE = 97
-SSH_MSG_CHANNEL_REQUEST = 98
-SSH_MSG_CHANNEL_SUCCESS = 99
-SSH_MSG_CHANNEL_FAILURE = 100
+from util.util import parse_ssh_string, ssh_string_len, var_int_len, write_ssh_string
+from util.wire import AppendVarInt
+from message.channel_request import channel_request_parse_funcs
+from message.message_type import *
 
 # Enum for SSH data types
 class SSHDataType:
@@ -41,6 +16,22 @@ class Message:
 
     def length(self):
         pass
+
+def parse_request_message(buf):
+    request_type, err = parse_ssh_string(buf)
+    if err:
+        return None, err
+
+    want_reply = struct.unpack('>b', buf.read(1))[0]
+    parse_func = channel_request_parse_funcs.get(request_type)
+    if not parse_func:
+        return None, ValueError(f"Invalid request message type {request_type}")
+
+    channel_request, err = parse_func(buf)
+    if err and not isinstance(err, io.EOFError):
+        return None, err
+
+    return ChannelRequestMessage(want_reply, channel_request), err
 
 class ChannelRequestMessage(Message):
     def __init__(self, want_reply, channel_request):
@@ -58,7 +49,7 @@ class ChannelRequestMessage(Message):
             raise ValueError(f"Buffer too small to write message for channel request of type {type(self.channel_request)}: {len(buf)} < {self.length()}")
 
         consumed = 0
-        msg_type_buf = append_var_int(None, SSH_MSG_CHANNEL_REQUEST)
+        msg_type_buf = AppendVarInt(None, SSH_MSG_CHANNEL_REQUEST)
         buf[consumed:consumed+len(msg_type_buf)] = msg_type_buf
         consumed += len(msg_type_buf)
 

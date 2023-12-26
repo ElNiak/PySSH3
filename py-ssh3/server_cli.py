@@ -47,7 +47,6 @@ signals = {
     "SIGRTMAX": signal.SIGRTMAX,
     "SIGRTMIN": signal.SIGRTMIN,
     "SIGSEGV": signal.SIGSEGV,
-    "SIGSTKFLT": signal.SIGSTKFLT,
     "SIGSTOP": signal.SIGSTOP,
     "SIGSYS": signal.SIGSYS,
     "SIGTERM": signal.SIGTERM,
@@ -305,14 +304,32 @@ def file_exists(path):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-bind", default="[::]:443", help="the address:port pair to listen to, e.g. 0.0.0.0:443")
+    parser.add_argument("--bind", default="[::]:443", help="the address:port pair to listen to, e.g. 0.0.0.0:443")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose mode, if set")
-    parser.add_argument("-enable-password-login", action="store_true", help="if set, enable password authentication (disabled by default)")
-    parser.add_argument("-url-path", default="/ssh3-term", help="the secret URL path on which the ssh3 server listens")
-    parser.add_argument("-generate-selfsigned-cert", action="store_true", help="if set, generates a self-self-signed cerificate and key that will be stored at the paths indicated by the -cert and -key args (they must not already exist)")
-    parser.add_argument("-cert", default="./cert.pem", help="the filename of the server certificate (or fullchain)")
-    parser.add_argument("-key", default="./priv.key", help="the filename of the certificate private key")
+    parser.add_argument("--enablePasswordLogin", action="store_true", help="if set, enable password authentication (disabled by default)")
+    parser.add_argument("--urlPath", default="/ssh3-term", help="the secret URL path on which the ssh3 server listens")
+    parser.add_argument("--generateSelfSignedCert", action="store_true", help="if set, generates a self-self-signed cerificate and key that will be stored at the paths indicated by the -cert and -key args (they must not already exist)")
+    parser.add_argument("--certPath", default="./cert.pem", help="the filename of the server certificate (or fullchain)")
+    parser.add_argument("--keyPath", default="./priv.key", help="the filename of the certificate private key")
     args = parser.parse_args()
+    
+    
+    if args.verbose:
+        log.basicConfig(level=logging.DEBUG)
+        util.configure_logger("debug")
+    else:
+        log_level = os.getenv("SSH3_LOG_LEVEL")
+        if log_level:
+            util.configure_logger(log_level)
+            numeric_level = getattr(log, log_level.upper(), None)
+            if not isinstance(numeric_level, int):
+                raise ValueError(f"Invalid log level: {log_level}")
+            logging.basicConfig(level=numeric_level)
+
+        logFileName = os.getenv("SSH3_LOG_FILE")
+        if not logFileName or logFileName == "":
+            logFileName = "ssh3_server.log"
+        logging.basicConfig(filename=logFileName, level=logging.INFO)
 
     if not args.enablePasswordLogin:
         log.error("password login is currently disabled")
@@ -335,7 +352,8 @@ async def main():
         if keyPathExists:
             log.error(f"asked for generating a private key but the \"{args.keyPath}\" file already exists")
         if certPathExists or keyPathExists:
-            sys.exit(-1)
+            #sys.exit(-1)
+            pass
         pubkey, privkey, err = util.generate_key()
         if err != None:
             log.error(f"could not generate private key: {err}")
@@ -345,35 +363,18 @@ async def main():
             log.error(f"could not generate certificate: {err}")
             sys.exit(-1)
 
-        err = util.dump_cert_and_key_to_files(cert, pubkey, privkey, args.certPath, args.keyPath)
+        err = util.dump_cert_and_key_to_files(cert, privkey, args.certPath, args.keyPath)
         if err != None:
             log.error(f"could not save certificate and key to files: {err}")
             sys.exit(-1)
-
-    if args.verbose:
-        log.basicConfig(level=log.DEBUG)
-        util.configure_logger("debug")
-    else:
-        log_level = os.getenv("SSH3_LOG_LEVEL")
-        if log_level:
-            util.configure_logger(log_level)
-            numeric_level = getattr(log, log_level.upper(), None)
-            if not isinstance(numeric_level, int):
-                raise ValueError(f"Invalid log level: {log_level}")
-            log.basicConfig(level=numeric_level)
-
-        logFileName = os.getenv("SSH3_LOG_FILE")
-        if logFileName == "":
-            logFileName = "/var/log/ssh3.log"
-        logFile = open(logFileName, "a")
-        log.basicConfig(filename=logFile, level=log.INFO)
     
     # TODO aioquic does not support this yet (disable or not 0rtt)
+   
     # quicConf = defaults.
     
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN + H0_ALPN + ["siduck"],
-        # congestion_control_algorithm=args.congestion_control_algorithm,
+        congestion_control_algorithm="reno",
         is_client=False,
         max_datagram_frame_size=65536,
         max_datagram_size=30000,
@@ -387,7 +388,7 @@ async def main():
     wg = sync.WaitGroup()
     wg.add(1)
     
-    
+    log.info(f"Starting server on {args.bind}")
     quic_server = await serve(
         args.bind.split(":")[0],
         args.bind.split(":")[1],
@@ -469,9 +470,9 @@ async def main():
     ssh3Server  = SSH3Server(30000,10,quic_server, conversation_handler=handle_auths)
     ssh3Handler = ssh3Server.get_http_handler_func()
     # mux.HandleFunc(*urlPath, linux_server.HandleAuths(context.Background(), *enablePasswordLogin, 30000, ssh3Handler))
-    mux.add_route(ssh3Handler, args.url_path)
+    mux.add_route(ssh3Handler, args.urlPath)
     quic_server._create_protocol._handler = mux # TODO
-    output_mess = f"Listening on {args.bind} with URL path {args.url_path}"
+    output_mess = f"Listening on {args.bind} with URL path {args.urlPath}"
     log.info(output_mess)
     err = await quic_server.serve()
     

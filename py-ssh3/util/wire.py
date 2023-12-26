@@ -1,5 +1,4 @@
 import io
-import struct
 from message.channel_request import *
 from util.type import *
 
@@ -11,32 +10,32 @@ maxVarInt2 = 16383
 maxVarInt4 = 1073741823
 maxVarInt8 = 4611686018427387903
 
-class Reader(io.ByteReader, io.Reader):
-    pass
+# class Reader(io.ByteReader, io.Reader):
+#     pass
 
-def NewReader(r):
-    if isinstance(r, Reader):
-        return r
-    return byteReader(r)
+# def NewReader(r):
+#     if isinstance(r, Reader):
+#         return r
+#     return byteReader(r)
 
-class byteReader(Reader):
-    def ReadByte(self):
-        b = self.Reader.read(1)
-        if len(b) == 1:
-            return b[0], None
-        return None, io.EOF
+# class byteReader(Reader):
+#     def ReadByte(self):
+#         b = self.Reader.read(1)
+#         if len(b) == 1:
+#             return b[0], None
+#         return None, io.EOF
 
-class Writer(io.ByteWriter, io.Writer):
-    pass
+# class Writer(io.ByteWriter, io.Writer):
+#     pass
 
-def NewWriter(w):
-    if isinstance(w, Writer):
-        return w
-    return byteWriter(w)
+# def NewWriter(w):
+#     if isinstance(w, Writer):
+#         return w
+#     return byteWriter(w)
 
-class byteWriter(Writer):
-    def WriteByte(self, c):
-        return self.Writer.write(bytes([c]))
+# class byteWriter(Writer):
+#     def WriteByte(self, c):
+#         return self.Writer.write(bytes([c]))
 
 def ReadVarInt(r):
     firstByte, err = r.ReadByte()

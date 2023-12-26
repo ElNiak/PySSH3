@@ -4,18 +4,14 @@ import ssl
 import os
 from aioquic.asyncio import connect
 from aioquic.asyncio.protocol import QuicConnectionProtocol
-from aioquic.quic.configuration import QuicConfiguration
-from aioquic.quic.events import HandshakeCompletedEvent, StreamDataReceived
-from aioquic.h3.connection import H3_ALPN, H3Connection
-from aioquic.h3.events import H3Event, HeadersReceived, DataReceived
 import logging
 import contextlib
 from typing import Callable, Tuple
 import util.util as util
 import http 
-from quic_client import QuicClientProtocol
-from quic_round_trip import RoundTripper, HTTP3Client
-import channel as channel
+from http3.quic_round_trip import HTTP3Client, RoundTripper
+
+log = logging.getLogger(__name__)
 
 class ConversationID:
     def __init__(self, value: bytes):
@@ -29,7 +25,9 @@ class ChannelsManager:
     # Define your channels manager logic here
     pass
 
-class Conversation(QuicConnectionProtocol):
+from ssh.channel import *
+
+class Conversation:
     def __init__(self, control_stream, max_packet_size, default_datagrams_queue_size, stream_creator, message_sender, channels_manager, conversation_id):
         self.control_stream = control_stream
         self.max_packet_size = max_packet_size
@@ -45,7 +43,7 @@ class Conversation(QuicConnectionProtocol):
     def __init__(self, max_packet_size, default_datagrams_queue_size, tls: ssl.SSLContext):
         self.conv_id, err = self.generate_conversation_id(tls)
         if err:
-            logging.error(f"could not generate conversation ID: {err}")
+            log.error(f"could not generate conversation ID: {err}")
             raise err
 
         self.control_stream = None
@@ -72,7 +70,7 @@ class Conversation(QuicConnectionProtocol):
         except Exception as e:
             return b'', e
         
-    async def establish_client_conversation(self, req: http.client.HTTPRequest, round_tripper: HTTP3Client):
+    async def establish_client_conversation(self, req, round_tripper: HTTP3Client):
         round_tripper.stream_hijacker = self.stream_hijacker
 
         response, body = await round_tripper.round_trip("GET", req.url, headers=req.headers)
@@ -106,7 +104,7 @@ class Conversation(QuicConnectionProtocol):
                 header_data = await stream.receive_some()
                 # Parse the header data
                 # TODO complete
-                control_stream_id, channel_type, max_packet_size = channel.parse_header(header_data)
+                control_stream_id, channel_type, max_packet_size = parse_header(header_data)
                 # Validate and process the header data
                 if control_stream_id != self.control_stream_id:
                     raise ValueError(f"Wrong conversation control stream ID: {control_stream_id}")

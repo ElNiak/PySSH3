@@ -12,11 +12,12 @@ setup(
         # "pyOpenSSL",
         "cryptography",
         "aioquic",
-        "pyjwt"
+        "pyjwt",
         # "http3",
         "authlib",
         # "PyCryptodome",
-        "sanic"
+        "sanic",
+        "paramiko"
         # "h11==0.9.0",
         # "wsproto"
     ],

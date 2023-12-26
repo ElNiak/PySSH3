@@ -4,16 +4,18 @@ class JWTTokenString:
         self.Token = token
 
 class SSHForwardingProtocol:
-    pass
+    def __init__(self, value):
+        self.value = value
 
 class SSHForwardingAddressFamily:
-    pass
+    def __init__(self, value):
+        self.value = value
 
 class ChannelID:
     pass
 
 # SSH forwarding protocols
-SSHProtocolUDP = SSHForwardingProtocol(0)
+SSHProtocolUDP           = SSHForwardingProtocol(0)
 SSHForwardingProtocolTCP = SSHForwardingProtocol(1)
 
 # SSH forwarding address families

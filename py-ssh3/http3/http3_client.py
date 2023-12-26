@@ -36,7 +36,9 @@ logger = logging.getLogger("client")
 
 HttpConnection = Union[H0Connection, H3Connection]
 
-USER_AGENT = "aioquic/" + aioquic.__version__
+from ssh.version import get_current_version
+
+USER_AGENT = get_current_version()
 
 
 class URL:

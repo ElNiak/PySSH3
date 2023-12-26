@@ -14,6 +14,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import logging
 import jwt
 from cryptography.hazmat.backends import default_backend
+import logging
+
+log = logging.getLogger(__name__)
 
 class UnknownSSHPubkeyType(Exception):
     def __init__(self, pubkey):
@@ -56,7 +59,7 @@ def configure_logger(log_level: str) -> None:
         logging.log_level = logging.WARN
 
 
-class AcceptQueue(T):
+class AcceptQueue:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.c = threading.Condition(self.lock)
@@ -192,6 +195,7 @@ def cert_has_ip_sans(cert_pem):
     try:
         san_extension = cert.extensions.get_extension_for_oid(x509.OID_SUBJECT_ALTERNATIVE_NAME)
     except x509.ExtensionNotFound as e:
+        log.error(f"could not find SAN extension in certificate: {e}")
         return False, e
 
     # Check for IP addresses in the SANs
@@ -209,6 +213,7 @@ def generate_key() -> Tuple[Ed25519PublicKey, Ed25519PrivateKey, Optional[Except
         # public_key.verify(signature, b"my authenticated message")
         return public_key, private_key, None
     except Exception as e:
+        log.error(f"could not generate key: {e}")
         return None, None, e
 
 
@@ -255,25 +260,29 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
         
         return cert, None
     except Exception as e:
+        log.error(f"could not generate cert: {e}")
         return None, e
 
 def dump_cert_and_key_to_files(cert: x509.Certificate, priv: Ed25519PrivateKey, cert_file: str, key_file: str) -> Optional[Exception]:
+    log.info(f"dumping cert to {cert_file} and key to {key_file}")
     try:
-        pem = cert.sign(priv, hashes.SHA256()).public_bytes(encoding=serialization.Encoding.PEM)
+        pem = cert.sign(priv, None).public_bytes(encoding=serialization.Encoding.PEM)
         with open(cert_file, "wb") as f:
             f.write(pem)
     except Exception as e:
+        log.error(f"could not dump cert to file: {e}")
         return e
     
     try:
         # Now we want to generate a cert from that root
         # TODO check if this is correct
         key_byte = priv.private_bytes(encoding=serialization.Encoding.PEM, 
-                                    format=serialization.PrivateFormat.TraditionalOpenSSL, 
-                                    encryption_algorithm=serialization.NoEncryption())
+                                     format=serialization.PrivateFormat.PKCS8, 
+                                     encryption_algorithm=serialization.NoEncryption())
         with open(key_file, "wb") as f:
             f.write(key_byte)
     except Exception as e:
+        log.error(f"could not dump key to file: {e}")
         return e
     
 def parse_ssh_string(buf):
@@ -325,3 +334,11 @@ def write_ssh_string(buf, value):
 def read_boolean(buf):
     """ Reads a boolean value from the buffer. """
     return buf.read(1)[0] != 0
+
+def ssh_string_len(s):
+    # Length of a 32-bit integer in bytes is 4
+    int_length = 4
+    # Length of the string
+    str_length = len(s)
+    # Total length is the length of the integer plus the length of the string
+    return int_length + str_length

@@ -19,7 +19,8 @@ make env; make install;
 ### PySSH3 server
 
 ```bash
-./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py
+./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --help
+./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --generateSelfSignedCert --enablePasswordLogin --bind "127.0.0.1:4443" --urlPath "/my-secret-path" --verbose
 ```
 
 #### Authorized keys and authorized identities 
@@ -27,7 +28,8 @@ TODO
 
 ### PySSH3 client
 ```bash
-./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py
+./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --help
+./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path" --verbose --usePassword
 ```
 
 #### Private-key authentication
