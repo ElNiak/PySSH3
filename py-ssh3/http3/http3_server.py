@@ -26,6 +26,7 @@ from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicE
 from aioquic.quic.logger import QuicFileLogger
 from aioquic.tls import SessionTicket
 
+
 try:
     import uvloop
 except ImportError:

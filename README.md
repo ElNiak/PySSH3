@@ -20,7 +20,7 @@ make env; make install;
 
 ```bash
 ./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --help
-./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --generateSelfSignedCert --enablePasswordLogin --bind "127.0.0.1:4443" --urlPath "/my-secret-path" --verbose
+./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --generateSelfSignedCert --enablePasswordLogin --bind "127.0.0.1:4443" --urlPath "/my-secret-path" --verbose --insecure
 ```
 
 #### Authorized keys and authorized identities 
@@ -30,7 +30,7 @@ TODO
 ```bash
 ./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --help
 ./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path?user=elniak" --verbose --usePassword
-./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path?user=elniak" --verbose --privkey ~/.ssh/id_rsa
+./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path?user=elniak" --verbose --privkey ~/.ssh/id_rsa --insecure
 ```
 
 #### Private-key authentication
@@ -51,3 +51,4 @@ TODO
 - [ ] Add more features
 - [ ] Add threading support
 - [ ] Inspire more from [paramiko]
+- [ ] Secure version

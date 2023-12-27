@@ -255,6 +255,7 @@ async def perform_http_request(
     start = time.time()
     if data is not None:
         data_bytes = data.encode()
+        logger.info("Sending %d-byte request body" % len(data_bytes))
         http_events = await client.post(
             url,
             data=data_bytes,
@@ -265,6 +266,7 @@ async def perform_http_request(
         )
         method = "POST"
     else:
+        logger.info("Sending GET request")
         http_events = await client.get(url)
         method = "GET"
     elapsed = time.time() - start

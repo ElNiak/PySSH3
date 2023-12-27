@@ -260,8 +260,9 @@ async def main():
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN,
         is_client=True,
-        max_datagram_frame_size=65536,
-        max_datagram_size=30000
+        # TODO Invalid payload length
+        # max_datagram_frame_size=65536,
+        # max_datagram_size=30000
     )
     configuration.verify_mode = ssl.CERT_REQUIRED if not args.insecure else ssl.CERT_NONE
     # load SSL certificate and key
@@ -302,7 +303,7 @@ async def main():
                 pass
             log.info(f"Connecting to {hostname}:{port}")
             # Attempt to establish a QUIC connection
-            async with connect(hostname, port, configuration=quic_config) as client:
+            async with connect(hostname, port, configuration=quic_config, create_protocol=HttpClient) as client:
                 # Connection established
                 return client
 
@@ -360,17 +361,16 @@ async def main():
     if not client or client == -1:
         return exit(-1)
     
-    tls_state = client.connection.tls.state
-    conv = new_client_conversation(30000,10, tls_state)
+    tls_state = client._quic.tls.state
+    log.info(f"TLS state is {tls_state}")
+    conv = await new_client_conversation(30000,10, tls_state)
+    
+    log.info(f"Conversation is {conv}")
     
     # HTTP request over QUIC
     # perform request
-    req = perform_http_request(
-            client=client,
-            url=url_from_param,
-            data="CONNECT",
-
-    )
+    req = HttpRequest(method="CONNECT", url=URL(url_from_param))
+    log.info(f"Request is {req}")
     # await asyncio.gather(*coros)
     # req.Proto = "ssh3" # TODO
     # process http pushes
@@ -415,14 +415,17 @@ async def main():
 
     auth_methods.append(config_auth_methods)
     
-    for issuer_config in oidc_config:
-        if issuer_url == issuer_config.issuer_url:
-            auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
+    if oidc_config:
+        for issuer_config in oidc_config:
+            if issuer_url == issuer_config.issuer_url:
+                auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
+    
+    log.debug(f"Try the following auth methods: {auth_methods}")
     
     identity = None
     for method in auth_methods:
         if isinstance(method, PasswordAuthMethod):
-            password = input(f"Password for {parsed_url}: ")
+            password = input(f"Password: ")
             identity = method.into_identity(password)
         elif isinstance(method, PrivkeyFileAuthMethod):
             try:
@@ -465,7 +468,7 @@ async def main():
     log.debug("Send CONNECT request to the server")
 
     try:
-        ret = conv.establish_client_conversation(req, client)
+        ret, err = await conv.establish_client_conversation(req, client)
         if ret ==  "Unauthorized":  # Replace with your specific error class
             log.error("Access denied from the server: unauthorized")
             exit(-1)

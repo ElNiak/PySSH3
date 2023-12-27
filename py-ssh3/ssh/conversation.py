@@ -1,15 +1,13 @@
 import asyncio
 import base64
 import ssl
-import os
-from aioquic.asyncio import connect
-from aioquic.asyncio.protocol import QuicConnectionProtocol
 import logging
 import contextlib
 from typing import Callable, Tuple
 import util.util as util
-import http 
-from http3.quic_round_trip import HTTP3Client, RoundTripper
+from ssh.version import parse_version 
+from http3.http3_client import *
+from ssh.resources_manager import *
 
 log = logging.getLogger(__name__)
 
@@ -21,12 +19,25 @@ class ConversationID:
     def __str__(self):
         return base64.b64encode(self.value).decode('utf-8')
 
-class ChannelsManager:
-    # Define your channels manager logic here
-    pass
-
 from ssh.channel import *
+import secrets
 
+def random_bytes(length: int) -> bytes:
+    return secrets.token_bytes(length)
+
+
+def generate_conversation_id(tls_connection_state: ssl.SSLObject) -> Tuple[bytes, Exception]:
+    return random_bytes(32), None
+    # try: # TODO
+    #     if not tls_connection_state:
+    #         return b'', Exception("TLS connection state is None")
+    #     key_material = tls_connection_state.export_keying_material("EXPORTER-SSH3", 32)
+    #     if len(key_material) != 32:
+    #         raise ValueError(f"TLS returned a tls-exporter with the wrong length ({len(key_material)} instead of 32)")
+    #     return key_material, None
+    # except Exception as e:
+    #     return b'', e
+    
 class Conversation:
     def __init__(self, control_stream, max_packet_size, default_datagrams_queue_size, stream_creator, message_sender, channels_manager, conversation_id):
         self.control_stream = control_stream
@@ -41,92 +52,104 @@ class Conversation:
         self.channels_accept_queue = None  # Set to an appropriate queue type
 
     def __init__(self, max_packet_size, default_datagrams_queue_size, tls: ssl.SSLContext):
-        self.conv_id, err = self.generate_conversation_id(tls)
+        self.conv_id, err = generate_conversation_id(tls)
         if err:
             log.error(f"could not generate conversation ID: {err}")
             raise err
 
         self.control_stream = None
-        self.channels_accept_queue = util.NewAcceptQueue()  # Assuming a suitable implementation
+        self.channels_accept_queue = util.AcceptQueue()  # Assuming a suitable implementation
         self.stream_creator = None
         self.max_packet_size = max_packet_size
         self.default_datagrams_queue_size = default_datagrams_queue_size
-        self.channels_manager = self.new_channels_manager()  # Assuming a suitable implementation
-        self.context, self.cancel_context = contextlib.ExitStack().enter_context(contextlib.closing(contextlib.ExitStack()))
+        self.channels_manager = ChannelsManager()  # Assuming a suitable implementation
         self.conversation_id = self.conv_id
         
-    @contextlib.contextmanager
-    def manage_context(self):
-        self.context, self.cancel_context = contextlib.ExitStack().enter_context(contextlib.closing(contextlib.ExitStack()))
-        yield
-        self.cancel_context()
+    async def establish_client_conversation(self, request, round_tripper: HttpClient):
+        # Stream hijacker
+        def stream_hijacker(frame_type, stream_id, data, end_stream):
+            # Your stream hijacking logic
+            """
+            Process data received on a hijacked stream.
+            
+            :param frame_type: The type of frame received (inferred from the data)
+            :param stream_id: The ID of the stream
+            :param data: The data received on the stream
+            :param end_stream: Flag indicating if the stream has ended
+            """
+            if frame_type != SSH_FRAME_TYPE:
+                # If the frame type is not what we're interested in, ignore it
+                return False, None
 
-    def generate_conversation_id(self, tls_connection_state: ssl.SSLObject) -> Tuple[bytes, Exception]:
-        try:
-            key_material = tls_connection_state.export_keying_material("EXPORTER-SSH3", 32)
-            if len(key_material) != 32:
-                raise ValueError(f"TLS returned a tls-exporter with the wrong length ({len(key_material)} instead of 32)")
-            return key_material, None
-        except Exception as e:
-            return b'', e
+            try:
+                # Parse the header from the data
+                control_stream_id, channel_type, max_packet_size = parse_header(stream_id, data)
+                
+                 # Create a new channel
+                channel_info = ChannelInfo(
+                    conversation_id=self.conversation_id,
+                    conversation_stream_id=control_stream_id,
+                    channel_id=stream_id,
+                    channel_type=channel_type,
+                    max_packet_size=max_packet_size
+                )
+
+                new_channel = Channel(
+                    channel_info.conversation_stream_id,
+                    channel_info.conversation_id,
+                    channel_info.channel_id,
+                    channel_info.channel_type,
+                    channel_info.max_packet_size,
+                    stream_reader=None,  # Replace with the actual stream reader
+                    stream_writer=None,  # Replace with the actual stream writer
+                    channels_manager=self.channels_manager,
+                    default_datagrams_queue_size=self.default_datagrams_queue_size
+                )
+                # Set the datagram sender and add the new channel to the queue
+                new_channel.set_datagram_sender(self.get_datagram_sender_for_channel(new_channel.channel_id))
+                self.channels_accept_queue.add(new_channel)
+
+                return True, None
+            except Exception as e:
+                # Log the error and return False with the error
+                log.error(f"Error in stream hijacker: {e}")
+                return False, e
+
+
+        # Assigning the hijacker to the round_tripper
+        round_tripper._stream_handler = stream_hijacker
         
-    async def establish_client_conversation(self, req, round_tripper: HTTP3Client):
-        round_tripper.stream_hijacker = self.stream_hijacker
+        log.debug(f"Establishing conversation with server: {request}")
 
-        response, body = await round_tripper.round_trip("GET", req.url, headers=req.headers)
-        if response is None:
-            return "Request failed"
-
+        # Performing the HTTP request
+        # response = await request
+        response = await round_tripper._request(request)
+        log.debug(f"Established conversation with server: {response}")
         server_version = response.headers.get("server")
-        # Parse version and handle server version check
-        # ...
+        log.debug(f"Established conversation with server: {server_version}")
+        major, minor, patch = parse_version(server_version)
 
         if response.status_code == 200:
             self.control_stream = response.http_stream
             self.stream_creator = response.stream_creator
-            self.context = response.context
-            asyncio.create_task(self.handle_datagrams(response.connection))
+            self.message_sender = response.http_connection._quic
+            await self.handle_datagrams(round_tripper)
             return None
         elif response.status_code == 401:
-            return "Unauthorized"
+            raise Exception("Authentication failed")
         else:
-            return f"Unexpected status code: {response.status_code}"
-
-    def stream_hijacker(self, frame_type, connection, stream, error):
-        if error is not None:
-            return False, error
-        if frame_type != util.SSH_FRAME_TYPE:
-            return False, None
-
-        # Asynchronously read from the stream to get the header data
-        async def read_header():
-            try:
-                header_data = await stream.receive_some()
-                # Parse the header data
-                # TODO complete
-                control_stream_id, channel_type, max_packet_size = parse_header(header_data)
-                # Validate and process the header data
-                if control_stream_id != self.control_stream_id:
-                    raise ValueError(f"Wrong conversation control stream ID: {control_stream_id}")
-                # Handle the new channel based on the parsed information
-                # ...
-                return True, None
-            except Exception as e:
-                return False, e
-
-        return read_header()
+            raise Exception(f"Returned non-200 and non-401 status code: {response.status_code}")
 
     async def handle_datagrams(self, connection):
         while True:
             try:
-                datagram = await connection.receive_datagram()
+                datagram = await connection.datagram_received()
                 # Process datagram
                 # ...
             except asyncio.CancelledError:
                 break
             
 async def new_client_conversation(max_packet_size, queue_size, tls_state):
-    conv_id = ConversationID.generate_conversation_id(tls_state)
     # Additional logic for creating a new client conversation
-    return Conversation(None, max_packet_size, queue_size)
+    return Conversation(max_packet_size, queue_size, tls_state)
 
