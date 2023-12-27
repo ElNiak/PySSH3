@@ -2,7 +2,7 @@ import os
 import fcntl
 import termios
 import struct
-from common import WindowSize
+from winsize.common import WindowSize
 
 def get_winsize_unix():
     ws = WindowSize()

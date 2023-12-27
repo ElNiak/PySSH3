@@ -29,7 +29,8 @@ TODO
 ### PySSH3 client
 ```bash
 ./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --help
-./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path" --verbose --usePassword
+./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path?user=elniak" --verbose --usePassword
+./ssh3_env/bin/activate && python3 py-ssh3/client_cli.py --url "127.0.0.1:4443/my-secret-path?user=elniak" --verbose --privkey ~/.ssh/id_rsa
 ```
 
 #### Private-key authentication

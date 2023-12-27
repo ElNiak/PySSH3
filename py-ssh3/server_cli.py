@@ -22,6 +22,7 @@ from server import SSH3Server
 from ssh.conversation import Conversation
 from ssh.channel import *
 from util.linux_util.linux_user import User
+from linux_server.auth import *
 
 log = logging.getLogger(__name__)
 
@@ -315,7 +316,7 @@ async def main():
     
     
     if args.verbose:
-        log.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG)
         util.configure_logger("debug")
     else:
         log_level = os.getenv("SSH3_LOG_LEVEL")
@@ -374,7 +375,6 @@ async def main():
     
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN + H0_ALPN + ["siduck"],
-        congestion_control_algorithm="reno",
         is_client=False,
         max_datagram_frame_size=65536,
         max_datagram_size=30000,

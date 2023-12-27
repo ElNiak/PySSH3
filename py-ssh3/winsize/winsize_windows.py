@@ -1,6 +1,6 @@
 import ctypes
 from ctypes import wintypes
-from common import WindowSize
+from winsize.common import WindowSize
 
 class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
     _fields_ = [("dwSize", wintypes._COORD),

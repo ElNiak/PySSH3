@@ -6,7 +6,8 @@ import asyncio
 import logging
 import argparse
 # Other necessary imports
-from winsize.winsize import get_winsize_unix, get_winsize_windows
+from winsize.winsize import get_winsize_unix
+from winsize.winsize_windows import get_winsize_windows
 import util.util as util
 from ssh.known_host import *
 import socket
@@ -44,9 +45,6 @@ def forward_tcp_in_background(channel, conn):
 
 def forward_udp_in_background(channel, conn):
     pass
-
-
-
 
 def parse_addr_port(addr_port_str:str):
     # Split the string to get the local port and the rest
@@ -98,18 +96,12 @@ async def main():
     parser.add_argument("--forwardAgent", action='store_true', help="if set, forwards ssh agent to be used with sshv2 connections on the remote host")
     parser.add_argument("--forwardUDP", help="if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
     parser.add_argument("--forwardTCP", help="if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
-    parser.add_argument(
-        "-k",
-        "--insecure",
-        action="store_true",
-        help="do not validate server certificate",
-    )
     parser.add_argument("--url", help="URL to connect to")
     args = parser.parse_args()
     
     
     if args.verbose:
-        log.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG)
         util.configure_logger("debug")
     else:
         log_level = os.getenv("SSH3_LOG_LEVEL")
@@ -126,17 +118,17 @@ async def main():
         logging.basicConfig(filename=logFileName, level=logging.INFO)
 
     # Create .ssh3 directory
-    ssh3_dir = homedir() / ".ssh3"
+    ssh3_dir = homedir() + "/" + ".ssh3"
     os.makedirs(ssh3_dir, exist_ok=True)
 
     # Parse known hosts
-    known_hosts_path = ssh3_dir / "known_hosts"
+    known_hosts_path = ssh3_dir + "/" + "known_hosts"
     known_hosts, skipped_lines, err = parse_known_hosts(known_hosts_path)
     if skipped_lines:
         log.warning(f"the following lines in {known_hosts_path} are invalid: {', '.join(map(str, skipped_lines))}")
     if err:
         log.error(f"there was an error when parsing known hosts: {err}")
-
+    log.info(f"Parsed known hosts file {known_hosts_path}, found {len(known_hosts)} hosts ({known_hosts}), skipped {len(skipped_lines)} lines, and got error {err}")
     # Handling tty
     try:
         tty = open("/dev/tty", "r+")
@@ -147,7 +139,7 @@ async def main():
     url_from_param = args.url
     if not url_from_param.startswith("https://"):
         url_from_param = f"https://{url_from_param}"
-    command = eval('"' + args.text.replace('"', '\\"') + '"')
+    command = " ".join(sys.argv)
     
     log.info(f"Connecting to {url_from_param} with command {command}")
 
@@ -199,7 +191,7 @@ async def main():
             exit(-1)
     
     # Read SSH config file
-    config_path = homedir() / ".ssh" / "config"
+    config_path = homedir() + "/" + ".ssh" + "/" + "config"
     try:
         # Assuming you have a way to decode SSH config in Python
         ssh_config = SSHConfig()
@@ -242,27 +234,31 @@ async def main():
         
     # Parse URL
     parsed_url = urllib.parse.urlparse(url_from_param)
+    log.info(f"URL from param {url_from_param}")
+    log.info(f"URL parsed as {parsed_url}")
 
     hostname, port = parsed_url.hostname, parsed_url.port
     config_hostname, config_port, config_user, config_auth_methods = get_config_for_host(hostname, ssh_config)
-
+    log.info(f"Configuration parameters for host are {config_hostname}, {config_port}, {config_user}, {config_auth_methods}")
     hostname = config_hostname or hostname
     port = port or config_port or 443
+    
+    log.info(f"Hostname is {hostname} and port is {port}")
 
-    username = parsed_url.username or parsed_url.query.get("user") or config_user
+    username = parsed_url.username or dict(urllib.parse.parse_qsl(parsed_url.query)).get("user") or config_user
     if not username:
         username = config_user
 
     if not username:
         log.error("No username could be found")
         exit(-1) 
-        
+    
+    log.info(f"Username is {username}")
     
     # Setup TLS configuration
     
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN,
-        congestion_control_algorithm="reno",
         is_client=True,
         max_datagram_frame_size=65536,
         max_datagram_size=30000
@@ -277,15 +273,16 @@ async def main():
         configuration.keylog_file = key_log
         
     ssh_auth_sock = os.getenv('SSH_AUTH_SOCK')
+    log.debug(f"SSH_AUTH_SOCK is {ssh_auth_sock}")
     agent_keys = []
     if ssh_auth_sock:
         try:
             agent = paramiko.Agent()
-            agent_keys = agent.get_keys()
-            for key in agent_keys:
-            # Here you can process each key. For example, print the key fingerprint.
+            agent_keys_t = agent.get_keys()
+            for key in agent_keys_t:
+                # Here you can process each key. For example, print the key fingerprint.
                 log.info(f"Key: {key.get_fingerprint()}")
-                agent_keys = agent_keys + [key]
+                agent_keys.append(key)
         except Exception as e:
             # Handle errors...
             log.error(f"Failed to open SSH_AUTH_SOCK or list agent keys: {e}")
@@ -303,7 +300,7 @@ async def main():
             except ValueError:
                 log.error(f"Not a valid IP address {ip}")  # Hostname is not an IP address
                 pass
-
+            log.info(f"Connecting to {hostname}:{port}")
             # Attempt to establish a QUIC connection
             async with connect(hostname, port, configuration=quic_config) as client:
                 # Connection established
@@ -354,12 +351,13 @@ async def main():
         
     log.info(f"Starting client to {url_from_param}")
     client = await dial_quic_host(
-                        url_from_param,
+                        hostname=hostname,
+                        port=port,
                         quic_config=configuration,
                         known_hosts_path=known_hosts_path
                     )
     
-    if not client:
+    if not client or client == -1:
         return exit(-1)
     
     tls_state = client.connection.tls.state
@@ -497,17 +495,17 @@ async def main():
                 try:
                     forward_channel = await conv.accept_channel()
                     if forward_channel.channel_type != "agent-connection":
-                        logging.error(f"Unexpected server-initiated channel: {forward_channel.channel_type}")
+                        log.error(f"Unexpected server-initiated channel: {forward_channel.channel_type}")
                         return
 
-                    logging.debug("New agent connection, forwarding")
+                    log.debug("New agent connection, forwarding")
                     asyncio.create_task(forward_agent(forward_channel))
 
                 except asyncio.CancelledError:
                     # Context was cancelled, exit the loop
                     return
                 except Exception as e:
-                    logging.error(f"Could not accept forwarding channel: {e}")
+                    log.error(f"Could not accept forwarding channel: {e}")
                     # Close the conversation on error
                     await conv.close()
                     return
@@ -542,7 +540,7 @@ async def main():
                 channel_request=ShellRequest()
             )
         )
-        logging.debug("Sent shell request")
+        log.debug("Sent shell request")
 
         # Make terminal raw if stdin is TTY
         # TODO
@@ -564,14 +562,134 @@ async def main():
                     command=exec_command
                 )
             ))
-        logging.debug(f"Sent exec request for command \"{exec_command}\"")
+        log.debug(f"Sent exec request for command \"{exec_command}\"")
     
     if err != None:
         log.error("Could not sebd shell request")
-
-
-
-
         
+    async def transfer_stdin_to_channel(channel):
+        try:
+            while True:
+                buf = await asyncio.to_thread(sys.stdin.buffer.read, channel.max_packet_size())
+                if buf:
+                    await asyncio.to_thread(channel.write_data, buf)
+        except Exception as e:
+            log.info(f"Error: {e}", file=sys.stderr)
+            return
+        
+    await transfer_stdin_to_channel(channel)
+
+
+    async def udp_forwarding(local_udp_addr, remote_udp_addr, conv):
+        log.debug(f"Start forwarding from {local_udp_addr} to {remote_udp_addr}")
+
+        # Create a UDP socket
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind(local_udp_addr)
+            forwardings = {}
+            async def handle_remote_dgram(channel, addr):
+                while True:
+                    try:
+                        # Assuming `channel.receive_datagram` is an async method to receive datagrams
+                        dgram = await channel.receive_datagram()
+                        sock.sendto(dgram, addr)
+                    except Exception as e:
+                        log.error(f"Could not write datagram on socket: {e}")
+                        return
+            while True:
+                try:
+                    dgram, addr = await asyncio.get_event_loop().sock_recvfrom(sock, 1500)
+                    if addr not in forwardings:
+                        # Open a new UDP forwarding channel
+                        # Assuming `conv.open_udp_forwarding_channel` is an async method to open a channel
+                        channel = await conv.open_udp_forwarding_channel(local_udp_addr, remote_udp_addr)
+                        forwardings[addr] = channel
+                        # Start a new task to handle incoming datagrams from the remote side
+                        asyncio.create_task(handle_remote_dgram(channel, addr))
+                    # Send the datagram to the remote side
+                    await channel.send_datagram(dgram)
+                except Exception as e:
+                    log.error(f"Could not handle UDP socket: {e}")
+                    return
+    
+    async def forward_tcp_in_background(channel, client_conn):
+        """
+        Handles forwarding of TCP data between client and remote server through an SSH channel.
+        """
+        try:
+            data = await asyncio.get_event_loop().sock_recv(client_conn, 4096)
+            if not data:
+               await forward_tcp_in_background(channel, client_conn) 
+            # Assuming 'channel.send_data' is an async method to send data through the channel
+            await channel.send_data(data)
+            
+            # Assuming 'channel.receive_data' is an async method to receive data from the channel
+            remote_data = await channel.receive_data()
+            if remote_data:
+                await asyncio.get_event_loop().sock_sendall(client_conn, remote_data)
+        except Exception as e:
+            logging.error(f"Error in TCP forwarding: {e}")
+        finally:
+            client_conn.close()
+
+    async def tcp_forwarding(local_tcp_addr, remote_tcp_addr, conv):
+        logging.debug(f"Start forwarding from {local_tcp_addr} to {remote_tcp_addr}")
+
+        server = await asyncio.start_server(
+            lambda r, w: handle_client(conv, remote_tcp_addr, r, w), 
+            local_tcp_addr[0], local_tcp_addr[1])
+
+        async def handle_client(conv, remote_tcp_addr, reader, writer):
+            forwarding_channel = await conv.open_tcp_forwarding_channel(remote_tcp_addr)
+            await forward_tcp_in_background(forwarding_channel, (reader, writer))
+
+        await server.serve_forever()
+    
+    if local_udp_addr != None and remote_udp_addr != None:
+        await udp_forwarding(local_udp_addr=local_udp_addr, remote_udp_addr=remote_udp_addr, conv=conv)
+    
+    if local_tcp_addr != None and remote_tcp_addr != None:
+        await tcp_forwarding(local_tcp_addr=local_tcp_addr, remote_tcp_addr=remote_tcp_addr, conv=conv)
+
+    conv.close()  
+    
+    async def read_channel_messages(channel):
+        try:
+            while True:
+                message = await channel.next_message()  # Assuming 'next_message' is an async method
+                if isinstance(message, ChannelRequestMessage):  
+                    if isinstance(message.channel_request, PtyRequest):  
+                        log.info("Receiving a pty request on the client is not implemented")
+                    elif isinstance(message.channel_request, X11Request):  
+                        log.info("Receiving a x11 request on the client is not implemented")
+                    elif isinstance(message.channel_request, ShellRequest):  
+                        log.info("Receiving a shell request on the client is not implemented")
+                    elif isinstance(message.channel_request, ExecRequest):  
+                        log.info("Receiving a exec request on the client is not implemented")
+                    elif isinstance(message.channel_request, SubsystemRequest):  
+                        log.info("Receiving a subsystem request on the client is not implemented")
+                    elif isinstance(message.channel_request, WindowChangeRequest):  
+                        log.info("Receiving a windowchange request on the client is not implemented")
+                    elif isinstance(message.channel_request, SignalRequest):  
+                        log.info("Receiving a signal request on the client is not implemented")
+                    elif isinstance(message.channel_request, ExitStatusRequest):  
+                        log.info(f"SSH3: Process exited with status: {message.channel_request.exit_status}")
+                        return message.channel_request.exit_status
+                    elif isinstance(message.channel_request, ExitSignalRequest):  
+                        log.info(f"SSH3: Process exited with signal: {message.channel_request.signal_name_without_sig}: {message.channel_request.error_message_utf8}")
+                        return -1
+
+                elif isinstance(message, DataOrExtendedDataMessage):  
+                    if message.data_type == SSHDataType.SSH_EXTENDED_DATA_NONE:  # Replace with the actual constant
+                        log.info(message.data.decode())
+                    elif message.data_type == SSHDataType.SSH_EXTENDED_DATA_STDERR:  # Replace with the actual constant
+                        log.error(message.data.decode())
+
+        except Exception as e:
+            log.info(f"Could not get message: {e}", file=sys.stderr)
+            exit(-1)
+            
+    await read_channel_messages(channel)
+    
 if __name__ == "__main__":
     asyncio.run(main())
