@@ -511,7 +511,8 @@ async def main():
         session_ticket_handler=glob.SESSION_TICKET_HANDLER,
     )
    
-    ssh3Server  = SSH3Server(30000,quic_server._create_protocol, 10, conversation_handler=handle_conv)
+
+    ssh3Server  = SSH3Server(30000,quic_server._protocols, 10, conversation_handler=handle_conv)
     ssh3Handler = ssh3Server.get_http_handler_func()
                     
     glob.ENABLE_PASSWORD_LOGIN = args.enablePasswordLogin

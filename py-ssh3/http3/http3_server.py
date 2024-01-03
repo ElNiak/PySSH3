@@ -26,7 +26,7 @@ from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicE
 from aioquic.quic.logger import QuicFileLogger
 from aioquic.tls import SessionTicket
 import util.globals as glob
-
+from http3.http3_hijacker import *
 try:
     import uvloop
 except ImportError:
@@ -332,6 +332,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
         super().__init__(*args, **kwargs)
         self._handlers: Dict[int, Handler] = {}
         self._http: Optional[HttpConnection] = None
+        self.hijacker = Hijacker(self)
 
     def http_event_received(self, event: H3Event) -> None:
         log.debug("HTTP event received: %s", event)

@@ -20,7 +20,7 @@ from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicE
 from ssh3.version import *
 from starlette.responses import PlainTextResponse, Response
 from aioquic.tls import *
-
+from http3.http3_hijacker import *
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ SERVER_NAME = get_current_version()
 class AuthHttpServerProtocol(HttpServerProtocol):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.hijacker = Hijacker(self)
 
     def http_event_received(self, event: H3Event) -> None:
         for header, value in event.headers:

@@ -11,7 +11,6 @@ from ssh3.version import parse_version
 from ssh3.channel import *
 from starlette.responses import PlainTextResponse, Response
 from aioquic.quic.connection import NetworkAddress, QuicConnection
-
 log = logging.getLogger(__name__)
 
 class SSH3Server:
@@ -26,7 +25,7 @@ class SSH3Server:
         self.conversation_handler = conversation_handler
         self.lock = asyncio.Lock()
         log.debug("SSH3Server initialized")
-        self.h3_server._stream_handler = self.stream_hijacker
+        #self.h3_server._stream_handler = self.stream_hijacker
         
     def stream_hijacker(frame_type, stream_id, data, end_stream):
         # Your stream hijacking logic
@@ -167,6 +166,12 @@ class SSH3Server:
             log.debug(f"request.url: {request.url}")
             if request.method == "CONNECT" and request.headers.get("protocol", None) == "ssh3": # request.url.scheme == "ssh3": TODO
                 # Assuming that request_handler can act as a hijacker
+                
+                protocols_keys = list(glob.QUIC_SERVER._protocols.keys())
+                prot = glob.QUIC_SERVER._protocols[protocols_keys[-1]]
+    
+                hijacker = prot.hijacker #self.h3_server.hijacker
+                stream_creator = hijacker.stream_creator()
                 # stream_creator =QuicConnection(
                 #     configuration=glob.CONFIGURATION,
                 #     session_ticket_handler=glob.SESSION_TICKET_HANDLER
