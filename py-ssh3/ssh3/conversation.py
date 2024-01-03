@@ -5,9 +5,10 @@ import logging
 import contextlib
 from typing import Callable, Tuple
 import util.util as util
-from ssh.version import parse_version 
+from ssh3.version import parse_version 
 from http3.http3_client import *
-from ssh.resources_manager import *
+from ssh3.resources_manager import *
+import secrets
 
 log = logging.getLogger(__name__)
 
@@ -15,19 +16,23 @@ class ConversationID:
     def __init__(self, value: bytes):
         self.value = value # 32 bytes
         assert len(value) <= 32
+        log.debug(f"ConversationID object created with value: {value}")
 
     def __str__(self):
         return base64.b64encode(self.value).decode('utf-8')
 
-from ssh.channel import *
-import secrets
+from ssh3.channel import *
+
 
 def random_bytes(length: int) -> bytes:
     return secrets.token_bytes(length)
 
 
 def generate_conversation_id(tls_connection_state: ssl.SSLObject) -> Tuple[bytes, Exception]:
-    return random_bytes(32), None
+    log.debug("generate_conversation_id function called")
+    result = random_bytes(32), None
+    log.debug(f"generate_conversation_id function returned result: {result}")
+    return result
     # try: # TODO
     #     if not tls_connection_state:
     #         return b'', Exception("TLS connection state is None")
@@ -50,6 +55,7 @@ class Conversation:
         self.cancel_context = None  # Will be set using context manager
         self.conversation_id = conversation_id
         self.channels_accept_queue = None  # Set to an appropriate queue type
+        log.debug(f"Conversation object created with control_stream: {control_stream}, max_packet_size: {max_packet_size}, default_datagrams_queue_size: {default_datagrams_queue_size}, stream_creator: {stream_creator}, message_sender: {message_sender}, channels_manager: {channels_manager}, conversation_id: {conversation_id}")
 
     def __init__(self, max_packet_size, default_datagrams_queue_size, tls: ssl.SSLContext):
         self.conv_id, err = generate_conversation_id(tls)
@@ -64,8 +70,13 @@ class Conversation:
         self.default_datagrams_queue_size = default_datagrams_queue_size
         self.channels_manager = ChannelsManager()  # Assuming a suitable implementation
         self.conversation_id = self.conv_id
-        
-    async def establish_client_conversation(self, request, round_tripper: HttpClient):
+        log.debug(f"Conversation object created with max_packet_size: {max_packet_size}, default_datagrams_queue_size: {default_datagrams_queue_size}, tls: {tls}")
+
+    def __str__(self) -> str:
+        return f"conversation: {self.conversation_id}"
+    
+    async def establish_client_conversation(self, request:HttpRequest, round_tripper: HttpClient):
+        log.debug(f"establish_client_conversation function called with request: {request}, round_tripper: {round_tripper}")
         # Stream hijacker
         def stream_hijacker(frame_type, stream_id, data, end_stream):
             # Your stream hijacking logic
@@ -77,6 +88,7 @@ class Conversation:
             :param data: The data received on the stream
             :param end_stream: Flag indicating if the stream has ended
             """
+            log.debug(f"Stream hijacker called with frame_type: {frame_type}, stream_id: {stream_id}, data: {data}, end_stream: {end_stream}")
             if frame_type != SSH_FRAME_TYPE:
                 # If the frame type is not what we're interested in, ignore it
                 return False, None
@@ -94,7 +106,7 @@ class Conversation:
                     max_packet_size=max_packet_size
                 )
 
-                new_channel = Channel(
+                new_channel = ChannelImpl(
                     channel_info.conversation_stream_id,
                     channel_info.conversation_id,
                     channel_info.channel_id,
@@ -117,7 +129,7 @@ class Conversation:
 
 
         # Assigning the hijacker to the round_tripper
-        round_tripper._stream_handler = stream_hijacker
+        # round_tripper._stream_handler = stream_hijacker
         
         log.debug(f"Establishing conversation with server: {request}")
 
@@ -141,6 +153,7 @@ class Conversation:
             raise Exception(f"Returned non-200 and non-401 status code: {response.status_code}")
 
     async def handle_datagrams(self, connection):
+        log.debug("handle_datagrams function called with connection: {connection}")
         while True:
             try:
                 datagram = await connection.datagram_received()
@@ -150,6 +163,8 @@ class Conversation:
                 break
             
 async def new_client_conversation(max_packet_size, queue_size, tls_state):
+    log.debug(f"new_client_conversation function called with max_packet_size: {max_packet_size}, queue_size: {queue_size}, tls_state: {tls_state}")
     # Additional logic for creating a new client conversation
-    return Conversation(max_packet_size, queue_size, tls_state)
-
+    result = Conversation(max_packet_size, queue_size, tls_state)
+    log.debug(f"new_client_conversation function returned result: {result}")
+    return result

@@ -30,6 +30,7 @@ class UnknownSSHPubkeyType(Exception):
 # EqualFold is strings.EqualFold, ASCII only. It reports whether s and t
 # are equal, ASCII-case-insensitively.
 def equal_fold(s: str, t: str) -> bool:
+    log.debug(f"equal_fold: s={s}, t={t}")
     if len(s) != len(t):
         return False
     for i in range(len(s)):
@@ -40,12 +41,14 @@ def equal_fold(s: str, t: str) -> bool:
 
 # lower returns the ASCII lowercase version of b.
 def lower(b: bytes) -> bytes:
+    log.debug(f"lower: b={b}")
     if b.isascii() and b.isupper():
         return bytes([b[i] + (ord('a') - ord('A')) for i in range(len(b))])
     return b
 
 
 def configure_logger(log_level: str) -> None:
+    log.debug(f"configure_logger: log_level={log_level}")
     log_level = log_level.lower()
     if log_level == "debug":
         logging.log_level = logging.DEBUG
@@ -66,17 +69,20 @@ class AcceptQueue:
         self.queue: List = []
 
     def add(self, item) -> None:
+        log.debug(f"AcceptQueue.add: item={item}")
         with self.lock:
             self.queue.append(item)
             self.c.notify()
 
     def next(self):
+        log.debug("AcceptQueue.next")
         with self.lock:
             while not self.queue:
                 self.c.wait()
             return self.queue.pop(0)
 
     def chan(self) -> threading.Condition:
+        log.debug("AcceptQueue.chan")
         return self.c
 
 
@@ -87,6 +93,7 @@ class DatagramsQueue:
         self.maxlen = maxlen
 
     def add(self, datagram: bytes) -> bool:
+        log.debug(f"DatagramsQueue.add: datagram={datagram}")
         with self.c:
             if len(self.queue) >= self.maxlen:
                 return False
@@ -95,6 +102,7 @@ class DatagramsQueue:
             return True
 
     def wait_add(self, ctx: contextlib.AbstractContextManager, datagram: bytes) -> Optional[Exception]:
+        log.debug(f"DatagramsQueue.wait_add: datagram={datagram}")
         with self.c:
             if len(self.queue) >= self.maxlen:
                 return Exception("queue full")
@@ -103,12 +111,14 @@ class DatagramsQueue:
             return None
 
     def next(self) -> Optional[bytes]:
+        log.debug("DatagramsQueue.next")
         with self.c:
             if not self.queue:
                 return None
             return self.queue.pop(0)
 
     def wait_next(self, ctx: contextlib.AbstractContextManager) -> Optional[bytes]:
+        log.debug("DatagramsQueue.wait_next")
         with self.c:
             while not self.queue:
                 if ctx.exception() is not None:
@@ -118,6 +128,7 @@ class DatagramsQueue:
 
 
 def jwt_signing_method_from_crypto_pubkey(pubkey) -> Tuple[str, Exception]:
+    log.debug(f"jwt_signing_method_from_crypto_pubkey: pubkey={pubkey}")
     try:
         if isinstance(pubkey, rsa.RSAPublicKey):
             return "RS256", None
@@ -130,6 +141,7 @@ def jwt_signing_method_from_crypto_pubkey(pubkey) -> Tuple[str, Exception]:
 
 
 def sha256_fingerprint(in_bytes: bytes) -> str:
+    log.debug(f"sha256_fingerprint: in_bytes={in_bytes}")
     sha256_hash = hashlib.sha256()
     sha256_hash.update(in_bytes)
     return base64.b64encode(sha256_hash.digest()).decode('utf-8')
@@ -188,6 +200,7 @@ def sha256_fingerprint(in_bytes: bytes) -> str:
 #     return len(ip_addresses) > 0, None
 
 def cert_has_ip_sans(cert_pem):
+    log.debug(f"cert_has_ip_sans: cert_pem={cert_pem}")
     # Load the certificate from PEM format
     cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
 
@@ -206,6 +219,7 @@ def cert_has_ip_sans(cert_pem):
 
 
 def generate_key() -> Tuple[Ed25519PublicKey, Ed25519PrivateKey, Optional[Exception]]:
+    log.debug("generate_key")
     try:
         private_key = Ed25519PrivateKey.generate()
         signature = private_key.sign(b"my authenticated message") # TODO
@@ -218,6 +232,7 @@ def generate_key() -> Tuple[Ed25519PublicKey, Ed25519PrivateKey, Optional[Except
 
 
 def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[Exception]]:
+    log.info(f"generate_cert: priv={priv}")
     try:
         subject = issuer = x509.Name([
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
@@ -264,7 +279,7 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
         return None, e
 
 def dump_cert_and_key_to_files(cert: x509.Certificate, priv: Ed25519PrivateKey, cert_file: str, key_file: str) -> Optional[Exception]:
-    log.info(f"dumping cert to {cert_file} and key to {key_file}")
+    log.info(f"dump_cert_to_file: cert_file={cert_file}, key_file={key_file}")
     try:
         pem = cert.sign(priv, None).public_bytes(encoding=serialization.Encoding.PEM)
         with open(cert_file, "wb") as f:
@@ -286,45 +301,13 @@ def dump_cert_and_key_to_files(cert: x509.Certificate, priv: Ed25519PrivateKey, 
         return e
     
 def parse_ssh_string(buf):
+    log.debug(f"parse_ssh_string: buf={buf}")
     """ Parses an SSH formatted string from the buffer. """
     length = int.from_bytes(buf.read(4), byteorder='big')
     return buf.read(length).decode('utf-8')
 
-def var_int_len(value):
-    """ Calculates the length of a variable integer. """
-    if value <= 0xFF:
-        return 1
-    elif value <= 0xFFFF:
-        return 2
-    elif value <= 0xFFFFFFFF:
-        return 4
-    else:
-        return 8
-
-def var_int_to_bytes(value):
-    """ Converts a variable integer to bytes. """
-    if value <= 0xFF:
-        return value.to_bytes(1, byteorder='big')
-    elif value <= 0xFFFF:
-        return value.to_bytes(2, byteorder='big')
-    elif value <= 0xFFFFFFFF:
-        return value.to_bytes(4, byteorder='big')
-    else:
-        return value.to_bytes(8, byteorder='big')
-
-def read_var_int(buf):
-    """ Reads a variable-length integer from the buffer. """
-    first_byte = buf.read(1)[0]
-    if first_byte <= 0xFF:
-        return first_byte
-    elif first_byte <= 0xFFFF:
-        return int.from_bytes(buf.read(1), byteorder='big', signed=False) + (first_byte << 8)
-    elif first_byte <= 0xFFFFFFFF:
-        return int.from_bytes(buf.read(3), byteorder='big', signed=False) + (first_byte << 24)
-    else:
-        return int.from_bytes(buf.read(7), byteorder='big', signed=False) + (first_byte << 56)
-
 def write_ssh_string(buf, value):
+    log.debug(f"write_ssh_string: value={value}")
     """ Writes an SSH formatted string into the buffer. """
     encoded_value = value.encode('utf-8')
     buf.extend(len(encoded_value).to_bytes(4, byteorder='big'))
@@ -332,10 +315,12 @@ def write_ssh_string(buf, value):
     return len(encoded_value) + 4
 
 def read_boolean(buf):
+    log.debug("read_boolean")
     """ Reads a boolean value from the buffer. """
     return buf.read(1)[0] != 0
 
 def ssh_string_len(s):
+    log.debug(f"ssh_string_len: s={s}")
     # Length of a 32-bit integer in bytes is 4
     int_length = 4
     # Length of the string

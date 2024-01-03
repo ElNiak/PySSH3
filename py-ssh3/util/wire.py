@@ -37,7 +37,7 @@ maxVarInt8 = 4611686018427387903
 #     def WriteByte(self, c):
 #         return self.Writer.write(bytes([c]))
 
-def ReadVarInt(r):
+def read_varint(r):
     firstByte, err = r.ReadByte()
     if err is not None:
         return 0, err
@@ -73,7 +73,7 @@ def ReadVarInt(r):
     if length == 8:
         return int(b8) + (int(b7) << 8) + (int(b6) << 16) + (int(b5) << 24) + (int(b4) << 32) + (int(b3) << 40) + (int(b2) << 48) + (int(b1) << 56), None
 
-def AppendVarInt(b, i):
+def append_varint(b, i):
     if i <= maxVarInt1:
         return b + bytes([i])
     if i <= maxVarInt2:
@@ -87,12 +87,12 @@ def AppendVarInt(b, i):
         ])
     raise Exception("%x doesn't fit into 62 bits",i)
 
-def AppendVarIntWithLen(b, i, length):
+def append_varintWithLen(b, i, length):
     if length != 1 and length != 2 and length != 4 and length != 8:
         raise Exception("invalid varint length")
-    l = VarIntLen(i)
+    l = varint_len(i)
     if l == length:
-        return AppendVarInt(b, i)
+        return append_varint(b, i)
     if l > length:
         raise Exception("cannot encode %d in %d bytes", i, length)
     if length == 2:
@@ -107,7 +107,7 @@ def AppendVarIntWithLen(b, i, length):
         b = b + bytes([(i >> (8 * (l - 1 - j))) & 0xff])
     return b
 
-def VarIntLen(i):
+def varint_len(i):
     if i <= maxVarInt1:
         return 1
     if i <= maxVarInt2:
@@ -119,7 +119,7 @@ def VarIntLen(i):
     raise Exception("value doesn't fit into 62 bits: %x",i)
 
 def ParseSSHString(buf):
-    length, err = ReadVarInt(buf)
+    length, err = read_varint(buf)
     if err is not None:
         return "", InvalidSSHString(err)
     out = bytearray(length)
@@ -133,15 +133,103 @@ def ParseSSHString(buf):
 def WriteSSHString(out, s):
     if len(out) < SSHStringLen(s):
         raise Exception("buffer too small to write varint: %d < %d", len(out), SSHStringLen(s))
-    buf = AppendVarInt(bytearray(), len(s))
+    buf = append_varint(bytearray(), len(s))
     out = out + buf
     out = out + s.encode('utf-8')
     return len(out), None
 
 def SSHStringLen(s):
-    return VarIntLen(len(s)) + len(s)
+    return varint_len(len(s)) + len(s)
 
 def MinUint64(a, b):
     if a <= b:
         return a
     return b
+
+# import struct
+# import io
+
+# # Constants for QUIC varints
+# MAX_VAR_INT1 = 63
+# MAX_VAR_INT2 = 16383
+# MAX_VAR_INT4 = 1073741823
+# MAX_VAR_INT8 = 4611686018427387903
+
+# class ByteReader:
+#     # A ByteReader class implementing io.ByteReader and io.Reader interfaces
+#     def __init__(self, reader):
+#         self.reader = reader
+
+#     def read_byte(self):
+#         return self.reader.read(1)
+
+#     def read(self, n=-1):
+#         return self.reader.read(n)
+
+# def new_reader(reader):
+#     # Returns a ByteReader for the given reader
+#     return ByteReader(reader)
+
+# def read_varint(reader):
+#     # Read a QUIC varint from the given reader
+#     first_byte = ord(reader.read_byte())
+#     length = 1 << ((first_byte & 0xc0) >> 6)
+#     b1 = first_byte & 0x3f
+#     if length == 1:
+#         return b1
+#     b2 = ord(reader.read_byte())
+#     if length == 2:
+#         return (b2 << 8) | b1
+#     b3 = ord(reader.read_byte())
+#     b4 = ord(reader.read_byte())
+#     if length == 4:
+#         return (b4 << 24) | (b3 << 16) | (b2 << 8) | b1
+#     b5 = ord(reader.read_byte())
+#     b6 = ord(reader.read_byte())
+#     b7 = ord(reader.read_byte())
+#     b8 = ord(reader.read_byte())
+#     return (b8 << 56) | (b7 << 48) | (b6 << 40) | (b5 << 32) | (b4 << 24) | (b3 << 16) | (b2 << 8) | b1
+
+# def append_varint(b, i):
+#     # Append a QUIC varint to the given byte array
+#     if i <= MAX_VAR_INT1:
+#         return b + struct.pack('B', i)
+#     if i <= MAX_VAR_INT2:
+#         return b + struct.pack('>H', i | 0x4000)
+#     if i <= MAX_VAR_INT4:
+#         return b + struct.pack('>I', i | 0x80000000)
+#     if i <= MAX_VAR_INT8:
+#         return b + struct.pack('>Q', i | 0xC000000000000000)
+#     raise ValueError(f"{i} doesn't fit into 62 bits")
+
+# def varint_len(i):
+#     # Determine the number of bytes needed to write the number i
+#     if i <= MAX_VAR_INT1:
+#         return 1
+#     if i <= MAX_VAR_INT2:
+#         return 2
+#     if i <= MAX_VAR_INT4:
+#         return 4
+#     if i <= MAX_VAR_INT8:
+#         return 8
+#     raise ValueError(f"value doesn't fit into 62 bits: {i}")
+
+# def parse_ssh_string(buf):
+#     # Parse an SSH string from the given buffer
+#     length, _ = read_varint(buf)
+#     return buf.read(length).decode('utf-8')
+
+# def write_ssh_string(out, s):
+#     # Write an SSH string to the given output buffer
+#     length = len(s)
+#     out.write(append_varint(b'', length))
+#     out.write(s.encode('utf-8'))
+#     return len(out.getvalue())
+
+# def ssh_string_len(s):
+#     # Calculate the length of an SSH string
+#     return varint_len(len(s)) + len(s)
+
+# def min_uint64(a, b):
+#     # Return the minimum of two uint64 values
+#     return min(a, b)

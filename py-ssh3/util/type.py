@@ -1,18 +1,21 @@
+import io
+
 # A JWT bearer token, encoded following the JWT specification
 class JWTTokenString:
-    def __init__(self, token):
-        self.Token = token
+    def __init__(self, token:str):
+        self.token = token
 
 class SSHForwardingProtocol:
-    def __init__(self, value):
+    def __init__(self, value:int):
         self.value = value
 
 class SSHForwardingAddressFamily:
-    def __init__(self, value):
+    def __init__(self, value:int):
         self.value = value
 
 class ChannelID:
-    pass
+    def __init__(self, value:int):
+        self.value = value
 
 # SSH forwarding protocols
 SSHProtocolUDP           = SSHForwardingProtocol(0)
@@ -22,37 +25,32 @@ SSHForwardingProtocolTCP = SSHForwardingProtocol(1)
 SSHAFIpv4 = SSHForwardingAddressFamily(4)
 SSHAFIpv6 = SSHForwardingAddressFamily(6)
 
-class UserNotFound:
+class UserNotFound(Exception):
     def __init__(self, username):
-        self.Username = username
+        super().__init__("User not found: " + username)
+        self.username = username
 
-    def Error(self):
-        return "User not found: " + self.Username
-
-class ChannelNotFound:
+class ChannelNotFound(Exception):
     def __init__(self, channelID):
-        self.ChannelID = channelID
+        super().__init__("Channel not found: " + str(channelID))
+        self.channel_id = channelID
 
-    def Error(self):
-        return "Channel not found: " + str(self.ChannelID)
-
-class InvalidSSHString:
+class InvalidSSHString(Exception):
     def __init__(self, reason):
-        self.Reason = reason
+        super().__init__("Invalid SSH string: " + str(reason))
+        self.reason = reason
 
-    def Error(self):
-        return "Invalid SSH string: " + str(self.Reason)
+class Unauthorized(Exception):
+    def __init__(self):
+        super().__init__("Unauthorized")
 
-class Unauthorized:
-    def Error(self):
-        return "Unauthorized"
+# class BytesReadCloser(io.BufferedReader):
+#     def __init__(self, reader):
+#         super().__init__(reader)
+#         self.reader = reader
 
-class BytesReadCloser:
-    def __init__(self, reader):
-        self.Reader = reader
-
-    def Close(self):
-        return None
+#     def read(self):
+#         return None
 
 # Sends an SSH3 datagram. The function must know the ID of the channel.
 class SSH3DatagramSenderFunc:

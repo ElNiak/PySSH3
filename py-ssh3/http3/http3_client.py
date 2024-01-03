@@ -36,7 +36,7 @@ logger = logging.getLogger("client")
 
 HttpConnection = Union[H0Connection, H3Connection]
 
-from ssh.version import get_current_version
+from ssh3.version import get_current_version
 
 USER_AGENT = get_current_version()
 
@@ -50,6 +50,7 @@ class URL:
         if parsed.query:
             self.full_path += "?" + parsed.query
         self.scheme = parsed.scheme
+        logger.debug(f"URL initialized with authority: {self.authority}, full_path: {self.full_path}, scheme: {self.scheme}")
 
 
 class HttpRequest:
@@ -67,6 +68,10 @@ class HttpRequest:
         self.headers = headers
         self.method = method
         self.url = url
+        logger.debug(f"HttpRequest initialized with method: {self.method}, url: {self.url}, content: {self.content}, headers: {self.headers}")
+        
+    def __str__(self):
+        return f"HttpRequest(method={self.method}, url={self.url}, content={self.content}, headers={self.headers})"
 
 
 class WebSocket:
@@ -79,6 +84,7 @@ class WebSocket:
         self.subprotocol: Optional[str] = None
         self.transmit = transmit
         self.websocket = wsproto.Connection(wsproto.ConnectionType.CLIENT)
+        logger.debug(f"WebSocket initialized with stream_id: {self.stream_id}, subprotocol: {self.subprotocol}")
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
         """
@@ -89,11 +95,13 @@ class WebSocket:
         )
         self.http.send_data(stream_id=self.stream_id, data=data, end_stream=True)
         self.transmit()
+        logger.debug(f"WebSocket closed with code: {code}, reason: {reason}")
 
     async def recv(self) -> str:
         """
         Receive the next message.
         """
+        logger.debug(f"WebSocket received message")
         return await self.queue.get()
 
     async def send(self, message: str) -> None:
@@ -105,8 +113,10 @@ class WebSocket:
         data = self.websocket.send(wsproto.events.TextMessage(data=message))
         self.http.send_data(stream_id=self.stream_id, data=data, end_stream=False)
         self.transmit()
+        logger.debug(f"WebSocket sent message: {message}")
 
     def http_event_received(self, event: H3Event) -> None:
+        logger.debug(f"WebSocket received HTTP event: {event}")
         if isinstance(event, HeadersReceived):
             for header, value in event.headers:
                 if header == b"sec-websocket-protocol":
@@ -118,6 +128,7 @@ class WebSocket:
             self.websocket_event_received(ws_event)
 
     def websocket_event_received(self, event: wsproto.events.Event) -> None:
+        logger.debug(f"WebSocket received websocket event: {event}")
         if isinstance(event, wsproto.events.TextMessage):
             self.queue.put_nowait(event.data)
 
@@ -136,11 +147,13 @@ class HttpClient(QuicConnectionProtocol):
             self._http = H0Connection(self._quic)
         else:
             self._http = H3Connection(self._quic)
+        logger.debug(f"HttpClient initialized with pushes: {self.pushes}, _http: {self._http}, _request_events: {self._request_events}, _request_waiter: {self._request_waiter}, _websockets: {self._websockets}")
 
     async def get(self, url: str, headers: Optional[Dict] = None) -> Deque[H3Event]:
         """
         Perform a GET request.
         """
+        logger.debug(f"HttpClient get called with url: {url}, headers: {headers}")
         return await self._request(
             HttpRequest(method="GET", url=URL(url), headers=headers)
         )
@@ -151,6 +164,7 @@ class HttpClient(QuicConnectionProtocol):
         """
         Perform a POST request.
         """
+        logger.debug(f"HttpClient post called with url: {url}, data: {data}, headers: {headers}")
         return await self._request(
             HttpRequest(method="POST", url=URL(url), content=data, headers=headers)
         )
@@ -185,10 +199,11 @@ class HttpClient(QuicConnectionProtocol):
         self._http.send_headers(stream_id=stream_id, headers=headers)
 
         self.transmit()
-
+        logger.debug(f"HttpClient websocket called with url: {url}, subprotocols: {subprotocols}")
         return websocket
 
     def http_event_received(self, event: H3Event) -> None:
+        logger.debug(f"HttpClient received HTTP event: {event}")
         if isinstance(event, (HeadersReceived, DataReceived)):
             stream_id = event.stream_id
             if stream_id in self._request_events:
@@ -213,6 +228,7 @@ class HttpClient(QuicConnectionProtocol):
 
     def quic_event_received(self, event: QuicEvent) -> None:
         #  pass event to the HTTP layer
+        logger.debug(f"HttpClient received QUIC event: {event}")   
         if self._http is not None:
             for http_event in self._http.handle_event(event):
                 self.http_event_received(http_event)
@@ -240,7 +256,7 @@ class HttpClient(QuicConnectionProtocol):
         self._request_events[stream_id] = deque()
         self._request_waiter[stream_id] = waiter
         self.transmit()
-
+        logger.debug(f"HttpClient _request called with request: {request}")
         return await asyncio.shield(waiter)
 
 
@@ -253,6 +269,7 @@ async def perform_http_request(
 ) -> None:
     # perform request
     start = time.time()
+    logger.info("Sending %s request" % ("POST" if data else "GET"))
     if data is not None:
         data_bytes = data.encode()
         logger.info("Sending %d-byte request body" % len(data_bytes))
@@ -297,6 +314,7 @@ def process_http_pushes(
     include: bool,
     output_dir: Optional[str],
 ) -> None:
+    logger.debug(f"HttpClient process_http_pushes called with include: {include}, output_dir: {output_dir}")
     for _, http_events in client.pushes.items():
         method = ""
         octets = 0
@@ -326,6 +344,7 @@ def process_http_pushes(
 def write_response(
     http_events: Deque[H3Event], output_file: BinaryIO, include: bool
 ) -> None:
+    logger.debug(f"HttpClient write_response called with include: {include}")
     for http_event in http_events:
         if isinstance(http_event, HeadersReceived) and include:
             headers = b""

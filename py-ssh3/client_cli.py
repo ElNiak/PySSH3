@@ -2,26 +2,27 @@ import ipaddress
 import json
 import os
 import sys
-import asyncio
+# import asyncio
 import logging
 import argparse
 # Other necessary imports
 from winsize.winsize import get_winsize_unix
 from winsize.winsize_windows import get_winsize_windows
 import util.util as util
-from ssh.known_host import *
+from ssh3.known_host import *
 import socket
 import re
 from paramiko.config import SSHConfig
 from aioquic.quic.configuration import QuicConfiguration
 from http3.http3_client import *
 import urllib
-from client import *
+from ssh3.ssh3_client import *
 from cryptography.hazmat.primitives import serialization
-from ssh.version import *
+from ssh3.version import *
 from auth.openid_connect import connect as oicd_connect
-from ssh.conversation import *
-from ssh.channel import *
+from ssh3.conversation import *
+import getpass
+from ssh3.channel import *
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,18 @@ async def main():
     parser.add_argument("--forwardUDP", help="if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
     parser.add_argument("--forwardTCP", help="if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
     parser.add_argument("--url", help="URL to connect to")
+    parser.add_argument(
+        "-l",
+        "--secrets-log",
+        type=str,
+        help="log secrets to a file, for use with Wireshark",
+    )
+    parser.add_argument(
+        "-s",
+        "--session-ticket",
+        type=str,
+        help="read and write session ticket from the specified file",
+    )
     args = parser.parse_args()
     
     
@@ -203,7 +216,7 @@ async def main():
     except Exception as e:
         log.warning(f"could not parse {config_path}: {e}, ignoring config")
         ssh_config = None
-
+    log.info(f"SSH config file is {config_path}")
     # Read OIDC config file (TODO)
     oidc_config = None
     if args.useOidc:
@@ -235,9 +248,17 @@ async def main():
     # Parse URL
     parsed_url = urllib.parse.urlparse(url_from_param)
     log.info(f"URL from param {url_from_param}")
-    log.info(f"URL parsed as {parsed_url}")
+    log.info(f"URL parsed as {parsed_url}")    
+    assert parsed_url.scheme in (
+        "https",
+        "wss",
+    ), "Only https:// or wss:// URLs are supported."
+    hostname = parsed_url.hostname
+    if parsed_url.port is not None:
+        port = parsed_url.port
+    else:
+        port = 443
 
-    hostname, port = parsed_url.hostname, parsed_url.port
     config_hostname, config_port, config_user, config_auth_methods = get_config_for_host(hostname, ssh_config)
     log.info(f"Configuration parameters for host are {config_hostname}, {config_port}, {config_user}, {config_auth_methods}")
     hostname = config_hostname or hostname
@@ -247,7 +268,7 @@ async def main():
 
     username = parsed_url.username or dict(urllib.parse.parse_qsl(parsed_url.query)).get("user") or config_user
     if not username:
-        username = config_user
+        username = getpass.getuser()
 
     if not username:
         log.error("No username could be found")
@@ -255,14 +276,21 @@ async def main():
     
     log.info(f"Username is {username}")
     
+    # open SSL log file
+    if args.secrets_log:
+        secrets_log_file = open(args.secrets_log, "a")
+    else:
+        secrets_log_file = None
+        
     # Setup TLS configuration
-    
+    defaults = QuicConfiguration(is_client=False)
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN,
         is_client=True,
-        # TODO Invalid payload length
-        # max_datagram_frame_size=65536,
-        # max_datagram_size=30000
+        max_datagram_frame_size=65536,
+        max_datagram_size=defaults.max_datagram_size,
+        quic_logger = QuicFileLogger("qlogs/"),
+        secrets_log_file=secrets_log_file
     )
     configuration.verify_mode = ssl.CERT_REQUIRED if not args.insecure else ssl.CERT_NONE
     # load SSL certificate and key
@@ -272,6 +300,8 @@ async def main():
 
     if key_log:
         configuration.keylog_file = key_log
+        
+    log.info(f"TLS configuration is {configuration}")
         
     ssh_auth_sock = os.getenv('SSH_AUTH_SOCK')
     log.debug(f"SSH_AUTH_SOCK is {ssh_auth_sock}")
@@ -291,21 +321,167 @@ async def main():
     
     logging.debug(f"Dialing QUIC host at {hostname}:{port}")
     
-    async def dial_quic_host(hostname, port, quic_config, known_hosts_path):
+    async def establish_client_connection(client):
+        log.info(f"Establishing client connection with {client}")
+        if not client or client == -1:
+            return exit(-1)
+        
+        tls_state = client._quic.tls.state
+        log.info(f"TLS state is {tls_state}")
+        
+        conv = await new_client_conversation(30000,10, tls_state)
+        
+        log.info(f"Conversation is {conv}")
+        
+        # HTTP request over QUIC
+        # perform request
+        req = HttpRequest(method="CONNECT", url=URL(url_from_param))
+        req.headers['user-agent'] = get_current_version()
+        # req.protocol = "ssh3"
+        log.info(f"Request is {req}")
+        # await asyncio.gather(*coros)
+        # req.Proto = "ssh3" # TODO
+        # process http pushes
+        # process_http_pushes(client=client)
+
+        # Handle authentication methods
+        auth_methods = []
+        priv_key_file = args.privkey
+        if not args.privkey:
+            priv_key_file = '~/.ssh/id_rsa'
+        pubkey_for_agent = '' # TODO
+        
+        if not args.useOidc:
+            # Private key and agent authentication
+            if priv_key_file:
+                # Add private key auth method
+                auth_methods.append(PrivkeyFileAuthMethod(priv_key_file))  # Implement based on your application logic
+
+            if pubkey_for_agent:
+                agent = paramiko.Agent()
+                agent_keys = agent.get_keys()
+                # Compare and add agent keys to auth methods
+                # TODO
+                pass  # Implement based on your application logic
+
+            if args.usePassword:
+                # Add password auth method
+                auth_methods.append(PasswordAuthMethod())  # Implement based on your application logic
+        else:
+            # OIDC authentication
+            # TODO
+            issuer_url = args.useOidc
+            if issuer_url:
+                # Add OIDC auth method based on issuer URL
+                for issuer_config in oidc_config:
+                    if issuer_url == issuer_config.issuer_url:
+                        auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
+                    
+            else:
+                log.error("OIDC was asked explicitly but did not find suitable issuer URL")
+                exit(-1)
+
+        auth_methods.append(config_auth_methods)
+        
+        if oidc_config:
+            for issuer_config in oidc_config:
+                if issuer_url == issuer_config.issuer_url:
+                    auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
+        
+        log.debug(f"Try the following auth methods: {auth_methods}")
+        
+        identity = None
+        for method in auth_methods:
+            if isinstance(method, PasswordAuthMethod):
+                password = input(f"Password: ")
+                identity = method.into_identity(password)
+            elif isinstance(method, PrivkeyFileAuthMethod):
+                try:
+                    identity = method.into_identity_without_passphrase()
+                except Exception as e:  # Replace with specific passphrase missing exception
+                    # Handle passphrase protected key
+                    passphrase = input(f"Passphrase for private key stored in {method.filename()}: ")
+                    identity = method.into_identity_passphrase(passphrase)
+                    if identity is None:
+                        log.error("Could not load private key with passphrase")
+            elif isinstance(method, AgentAuthMethod):
+                # Assuming an SSH agent is already connected
+                # identity = method.into_identity(agent_client)
+                pass # TODO
+            elif isinstance(method, OIDCAuthMethod): 
+                # Assuming an OIDC connection method
+                # TODO
+                token, err = oicd_connect(method.oidc_config(), method.oidc_config().issuer_url, method.do_pkce)
+                if err:
+                    log.error(f"Could not get token: {err}")
+                else:
+                    identity = method.into_identity(token)
+
+            if identity:
+                break  # Exit the loop once an identity is found
+
+        if identity is None:
+            log.error("No suitable identity found")
+            # Handle the error or exit
+            exit(-1)
+        
+        log.debug(f"Try the following Identity: {identity}")
+
+        try:
+            identity.set_authorization_header(req, username, conv)
+        except Exception as e:
+            log.error(f"Could not set authorization header in HTTP request: {e}")
+            exit(-1)
+
+        log.debug(f"Send CONNECT request to the server {req}")
+
+        try:
+            ret, err = await conv.establish_client_conversation(req, client)
+            if ret ==  "Unauthorized":  # Replace with your specific error class
+                log.error("Access denied from the server: unauthorized")
+                exit(-1)
+        except Exception as e:
+            log.error(f"Could not open channel: {e}")
+            exit(-1)
+
+    
+    async def dial_quic_host(hostname, port, quic_config, known_hosts_path, establish_client_connection):
         try:
             # Check if hostname is an IP address and format it appropriately
             try:
+                log.info(f"Checking if {hostname} is an IP address")
                 ip = ipaddress.ip_address(hostname)
                 if ip.version == 6:
                     hostname = f"[{hostname}]"
             except ValueError:
-                log.error(f"Not a valid IP address {ip}")  # Hostname is not an IP address
+                log.error(f"Not a valid IP address {hostname}")  # Hostname is not an IP address
                 pass
             log.info(f"Connecting to {hostname}:{port}")
             # Attempt to establish a QUIC connection
-            async with connect(hostname, port, configuration=quic_config, create_protocol=HttpClient) as client:
+            async with connect(hostname, port, 
+                               configuration=quic_config, 
+                            #    session_ticket_handler=save_session_ticket,
+                               wait_connected=True,
+                               create_protocol=HttpClient) as client:
                 # Connection established
-                return client
+                client = cast(HttpClient, client)
+                log.info(f"Connected to {hostname}:{port} with client {client}")
+                await establish_client_connection(client)
+                # coros = [
+                #     perform_http_request(
+                #         client=client,
+                #         url=url,
+                #         data=None,
+                #         include=False,
+                #         output_dir=None,
+                #     )
+                #     for url in [url_from_param]
+                # ]
+                # await asyncio.gather(*coros)
+
+                log.info(f"Push HTTP event{client}")
+                process_http_pushes(client=client,include=False,output_dir=None)
+                client._quic.close(error_code=ErrorCode.H3_NO_ERROR)
 
         except ssl.SSLError as e:
             logging.error("TLS error: %s", e)
@@ -351,132 +527,14 @@ async def main():
 
         
     log.info(f"Starting client to {url_from_param}")
-    client = await dial_quic_host(
-                        hostname=hostname,
-                        port=port,
-                        quic_config=configuration,
-                        known_hosts_path=known_hosts_path
-                    )
+    await dial_quic_host(
+        hostname=hostname,
+        port=port,
+        quic_config=configuration,
+        known_hosts_path=known_hosts_path,
+        establish_client_connection=establish_client_connection
+    )
     
-    if not client or client == -1:
-        return exit(-1)
-    
-    tls_state = client._quic.tls.state
-    log.info(f"TLS state is {tls_state}")
-    conv = await new_client_conversation(30000,10, tls_state)
-    
-    log.info(f"Conversation is {conv}")
-    
-    # HTTP request over QUIC
-    # perform request
-    req = HttpRequest(method="CONNECT", url=URL(url_from_param))
-    log.info(f"Request is {req}")
-    # await asyncio.gather(*coros)
-    # req.Proto = "ssh3" # TODO
-    # process http pushes
-    # process_http_pushes(client=client)
-
-    # Handle authentication methods
-    auth_methods = []
-    priv_key_file = args.privkey
-    if not args.privkey:
-        priv_key_file = '~/.ssh/id_rsa'
-    pubkey_for_agent = '' # TODO
-    
-    if not args.useOidc:
-        # Private key and agent authentication
-        if priv_key_file:
-            # Add private key auth method
-            auth_methods.append(PrivkeyFileAuthMethod(priv_key_file))  # Implement based on your application logic
-
-        if pubkey_for_agent:
-            agent = paramiko.Agent()
-            agent_keys = agent.get_keys()
-            # Compare and add agent keys to auth methods
-            # TODO
-            pass  # Implement based on your application logic
-
-        if args.usePassword:
-            # Add password auth method
-            auth_methods.append(PasswordAuthMethod())  # Implement based on your application logic
-    else:
-        # OIDC authentication
-        # TODO
-        issuer_url = args.useOidc
-        if issuer_url:
-            # Add OIDC auth method based on issuer URL
-            for issuer_config in oidc_config:
-                if issuer_url == issuer_config.issuer_url:
-                    auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
-                
-        else:
-            log.error("OIDC was asked explicitly but did not find suitable issuer URL")
-            exit(-1)
-
-    auth_methods.append(config_auth_methods)
-    
-    if oidc_config:
-        for issuer_config in oidc_config:
-            if issuer_url == issuer_config.issuer_url:
-                auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
-    
-    log.debug(f"Try the following auth methods: {auth_methods}")
-    
-    identity = None
-    for method in auth_methods:
-        if isinstance(method, PasswordAuthMethod):
-            password = input(f"Password: ")
-            identity = method.into_identity(password)
-        elif isinstance(method, PrivkeyFileAuthMethod):
-            try:
-                identity = method.into_identity_without_passphrase()
-            except Exception as e:  # Replace with specific passphrase missing exception
-                # Handle passphrase protected key
-                passphrase = input(f"Passphrase for private key stored in {method.filename()}: ")
-                identity = method.into_identity_passphrase(passphrase)
-                if identity is None:
-                    log.error("Could not load private key with passphrase")
-        elif isinstance(method, AgentAuthMethod):
-            # Assuming an SSH agent is already connected
-            # identity = method.into_identity(agent_client)
-            pass # TODO
-        elif isinstance(method, OIDCAuthMethod): 
-            # Assuming an OIDC connection method
-            # TODO
-            token, err = oicd_connect(method.oidc_config(), method.oidc_config().issuer_url, method.do_pkce)
-            if err:
-                log.error(f"Could not get token: {err}")
-            else:
-                identity = method.into_identity(token)
-
-        if identity:
-            break  # Exit the loop once an identity is found
-
-    if identity is None:
-        log.error("No suitable identity found")
-        # Handle the error or exit
-        exit(-1)
-    
-    log.debug(f"Try the following Identity: {identity}")
-
-    try:
-        identity.set_authorization_header(req, username, conv)
-    except Exception as e:
-        log.error(f"Could not set authorization header in HTTP request: {e}")
-        exit(-1)
-
-    log.debug("Send CONNECT request to the server")
-
-    try:
-        ret, err = await conv.establish_client_conversation(req, client)
-        if ret ==  "Unauthorized":  # Replace with your specific error class
-            log.error("Access denied from the server: unauthorized")
-            exit(-1)
-    except Exception as e:
-        log.error(f"Could not open channel: {e}")
-        exit(-1)
-
-
     try:
         channel = conv.open_channel("session", 30000, 0)
     except Exception as e:

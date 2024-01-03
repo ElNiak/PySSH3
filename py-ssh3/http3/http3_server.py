@@ -31,6 +31,8 @@ try:
     import uvloop
 except ImportError:
     uvloop = None
+    
+log = logging.getLogger(__name__)
 
 AsgiApplication = Callable
 HttpConnection = Union[H0Connection, H3Connection]
@@ -82,6 +84,7 @@ class HttpRequestHandler:
         return await self.queue.get()
 
     async def send(self, message: Dict) -> None:
+        log.debug(message)
         if message["type"] == "http.response.start":
             self.connection.send_headers(
                 stream_id=self.stream_id,
@@ -330,6 +333,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
         self._http: Optional[HttpConnection] = None
 
     def http_event_received(self, event: H3Event) -> None:
+        log.debug("HTTP event received: %s", event)
         if isinstance(event, HeadersReceived) and event.stream_id not in self._handlers:
             authority = None
             headers = []
@@ -448,8 +452,10 @@ class HttpServerProtocol(QuicConnectionProtocol):
             handler.http_event_received(event)
 
     def quic_event_received(self, event: QuicEvent) -> None:
+        log.debug("QUIC event received: %s", event)
         if isinstance(event, ProtocolNegotiated):
             if event.alpn_protocol in H3_ALPN:
+                log.debug("Negotiated HTTP/3")
                 self._http = H3Connection(self._quic, enable_webtransport=True)
             elif event.alpn_protocol in H0_ALPN:
                 self._http = H0Connection(self._quic)

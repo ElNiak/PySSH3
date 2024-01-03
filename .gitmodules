@@ -1,0 +1,3 @@
+[submodule "py-ssh3/aioquic"]
+	path = py-ssh3/aioquic
+	url = https://github.com/aiortc/aioquic.git

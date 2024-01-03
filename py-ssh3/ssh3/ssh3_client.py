@@ -4,7 +4,7 @@ import jwt
 import paramiko
 from http import HTTPStatus
 from typing import Tuple, List
-from ssh.identity import Identity
+from ssh3.identity import Identity
 import time
 
 class OIDCAuthMethod:
@@ -70,7 +70,7 @@ class PasswordBasedIdentity(Identity):
     def set_authorization_header(self, req, username: str, conversation):
         # Implement logic to use SSH agent for signing
         # and setting the Authorization header
-        pass
+        req.headers['authorization'] = f"Basic {base64.b64encode(f'{username}:{self.password}'.encode('utf-8')).decode('utf-8')}"
 
     def auth_hint(self):
         return "password"
@@ -84,7 +84,7 @@ class RawBearerTokenIdentity(Identity):
         self.bearer_token = bearer_token
 
     def set_authorization_header(self, req, username: str, conversation):
-        req.headers['Authorization'] = f"Bearer {self.bearer_token}"
+        req.headers['authorization'] = f"Bearer {self.bearer_token}"
 
     def auth_hint(self) -> str:
         return "jwt"

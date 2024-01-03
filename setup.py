@@ -8,18 +8,20 @@ setup(
     author_email="elniak@email.com",
     packages=find_packages(),
     install_requires=[
-        "aiohttp",
+        # "aiohttp",
         # "pyOpenSSL",
         "cryptography",
-        "aioquic",
+        # "aioquic==0.9.24",
         "pyjwt",
         # "http3",
         "authlib",
         # "PyCryptodome",
         "sanic",
-        "paramiko"
+        "paramiko",
         # "h11==0.9.0",
-        # "wsproto"
+        "wsproto",
+        "jinja2",
+        "starlette",
     ],
 )
 

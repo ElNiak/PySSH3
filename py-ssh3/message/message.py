@@ -1,7 +1,8 @@
 import io
 import struct
-from util.util import parse_ssh_string, ssh_string_len, var_int_len, write_ssh_string
-from util.wire import AppendVarInt
+from util.util import *
+from util.quic_util import *
+from util.wire import append_varint
 from message.channel_request import channel_request_parse_funcs
 from message.message_type import *
 
@@ -49,7 +50,7 @@ class ChannelRequestMessage(Message):
             raise ValueError(f"Buffer too small to write message for channel request of type {type(self.channel_request)}: {len(buf)} < {self.length()}")
 
         consumed = 0
-        msg_type_buf = AppendVarInt(None, SSH_MSG_CHANNEL_REQUEST)
+        msg_type_buf = append_varint(None, SSH_MSG_CHANNEL_REQUEST)
         buf[consumed:consumed+len(msg_type_buf)] = msg_type_buf
         consumed += len(msg_type_buf)
 

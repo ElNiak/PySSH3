@@ -4,6 +4,7 @@ import base64
 import logging
 from http3.http3_server import HttpRequestHandler
 from util.linux_util.linux_user import *
+from linux_server.authorized_identities import *
 
 def bearer_auth(headers: dict) -> Tuple[str, bool]:
     """
@@ -46,12 +47,12 @@ def handle_jwt_auth(username: str, new_conv: object, handler_func: Callable) -> 
             request_handler.send_unauthorized_response()
             return
 
-        filenames = DefaultIdentitiesFileNames(user)
+        filenames = default_identities_file_names(user)
         identities = []
         for filename in filenames:
             try:
                 with open(filename, 'r') as identities_file:
-                    new_identities = ParseAuthorizedIdentitiesFile(user, identities_file)
+                    new_identities = parse_authorized_identities_file(user, identities_file)
                     identities.extend(new_identities)
             except FileNotFoundError:
                 pass  # File not found, continue with the next file

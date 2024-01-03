@@ -1,12 +1,12 @@
 import os
 import signal
-import asyncio
+# import asyncio
 import signal
 import fcntl
 import struct
 import termios
 import logging
-import asyncio
+# import asyncio
 import os
 import logging
 import util.linux_util
@@ -18,9 +18,9 @@ import util.waitgroup as sync
 from http3.http3_server import *
 from aioquic.quic.configuration import QuicConfiguration
 from sanic import Sanic
-from server import SSH3Server
-from ssh.conversation import Conversation
-from ssh.channel import *
+from ssh3.ssh3_server import SSH3Server
+from ssh3.conversation import Conversation
+from ssh3.channel import *
 from util.linux_util.linux_user import User
 from linux_server.auth import *
 
@@ -305,6 +305,13 @@ def file_exists(path):
 
 async def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--app",
+        type=str,
+        nargs="?",
+        default="agsi_ssh3:app",
+        help="the ASGI application as <module>:<attribute>",
+    )
     parser.add_argument("--bind", default="[::]:443", help="the address:port pair to listen to, e.g. 0.0.0.0:443")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose mode, if set")
     parser.add_argument("--enablePasswordLogin", action="store_true", help="if set, enable password authentication (disabled by default)")
@@ -312,8 +319,18 @@ async def main():
     parser.add_argument("--generateSelfSignedCert", action="store_true", help="if set, generates a self-self-signed cerificate and key that will be stored at the paths indicated by the -cert and -key args (they must not already exist)")
     parser.add_argument("--certPath", default="./cert.pem", help="the filename of the server certificate (or fullchain)")
     parser.add_argument("--keyPath", default="./priv.key", help="the filename of the certificate private key")
+    parser.add_argument(
+        "-l",
+        "--secrets-log",
+        type=str,
+        help="log secrets to a file, for use with Wireshark",
+    )
     args = parser.parse_args()
     
+     # import ASGI application
+    module_str, attr_str = args.app.split(":", maxsplit=1)
+    module = importlib.import_module(module_str)
+    application = getattr(module, attr_str)
     
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
@@ -373,13 +390,20 @@ async def main():
    
     # quicConf = defaults.
     
+    # open SSL log file
+    if args.secrets_log:
+        secrets_log_file = open(args.secrets_log, "a")
+    else:
+        secrets_log_file = None
+    
+    defaults = QuicConfiguration(is_client=False)
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN + H0_ALPN + ["siduck"],
         is_client=False,
         max_datagram_frame_size=65536,
-        max_datagram_size=30000,
-        # quic_logger=quic_logger,
-        # secrets_log_file=secrets_log_file,
+        max_datagram_size=defaults.max_datagram_size,
+        quic_logger = QuicFileLogger("qlogs/"),
+        secrets_log_file=secrets_log_file
     )
 
     # load SSL certificate and key
@@ -389,20 +413,14 @@ async def main():
     wg.add(1)
     
     log.info(f"Starting server on {args.bind}")
-    quic_server = await serve(
-        args.bind.split(":")[0],
-        args.bind.split(":")[1],
-        configuration=configuration,
-        create_protocol=HttpServerProtocol,
-        # session_ticket_fetcher=session_ticket_store.pop,
-        # session_ticket_handler=session_ticket_store.add,
-        # retry=retry,
-    )
-    await asyncio.Future()
     
-    mux = Sanic()
     
-    def handle_auths(authenticatedUsername: str, conv: Conversation):
+    # await asyncio.Future()
+    
+    mux = Sanic(name="ssh3")
+    
+    def handle_conv(authenticatedUsername: str, conv: Conversation):
+        log.info(f"Handling authentification for {authenticatedUsername}")
         authUser = util.linux_util.linux_user.get_user(authenticatedUsername)
         
         channel, err = conv.accept_channel()
@@ -466,19 +484,41 @@ async def main():
                 return
         
         handle_session_channel()   
-        
-    ssh3Server  = SSH3Server(30000,10,quic_server, conversation_handler=handle_auths)
-    ssh3Handler = ssh3Server.get_http_handler_func()
-    # mux.HandleFunc(*urlPath, linux_server.HandleAuths(context.Background(), *enablePasswordLogin, 30000, ssh3Handler))
-    mux.add_route(ssh3Handler, args.urlPath)
-    quic_server._create_protocol._handler = mux # TODO
-    output_mess = f"Listening on {args.bind} with URL path {args.urlPath}"
-    log.info(output_mess)
-    err = await quic_server.serve()
     
-    if err != None:
-        log.error(f"could not serve: {err}")
-        sys.exit(-1)
+    # authenticated_username, new_conv, request_handler
+    # asyncio.create_task(ssh3Handler(qconn, new_conv, conversations_manager))
+    session_ticket_store = SessionTicketStore()
+    quic_server = await serve(
+        args.bind.split(":")[0],
+        args.bind.split(":")[1],
+        configuration=configuration,
+        create_protocol=AuthHttpServerProtocol,
+        # max_packet_size=30000,
+        # default_datagram_queue_size=10,
+        # conversation_handler=handle_auths,
+        # stream_handler=ssh3Handler,
+        session_ticket_fetcher=session_ticket_store.pop,
+        session_ticket_handler=session_ticket_store.add,
+        # retry=retry,
+    )
+   
+    ssh3Server  = SSH3Server(30000,quic_server._create_protocol, 10, conversation_handler=handle_conv)
+    ssh3Handler = ssh3Server.get_http_handler_func()
+                    
+    # asyncio.create_task(handle_auths(args.enablePasswordLogin, 30000, ssh3Handler, quic_server))
+     
+    # mux.HandleFunc(*urlPath, linux_server.HandleAuths(context.Background(), *enablePasswordLogin, 30000, ssh3Handler))
+    # mux.add_route(ssh3Handler, args.urlPath)
+    # mux.add_route(handle_auths, args.urlPath)
+   
+    
+    log.info(f"Listening on {args.bind} with URL path {args.urlPath}")
+    
+    await asyncio.Future()
+    
+    # if err != None:
+    #     log.error(f"could not serve: {err}")
+    #     sys.exit(-1)
         
     wg.done()
     
