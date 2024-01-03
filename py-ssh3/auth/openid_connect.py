@@ -1,4 +1,5 @@
 import os
+from urllib import request
 import webbrowser
 import http.server
 import socketserver
@@ -23,7 +24,7 @@ def connect(oidc_config: OIDCConfig, issuer_url: str, do_pkce: bool):
     # Discover the provider
     # Note: Discovery endpoint can vary by provider
     discovery_url = f"{issuer_url}/.well-known/openid-configuration"
-    oidc_provider_config = requests.get(discovery_url).json()
+    oidc_provider_config = request.get(discovery_url).json()
     
     authorization_endpoint = oidc_provider_config["authorization_endpoint"]
     token_endpoint = oidc_provider_config["token_endpoint"]

@@ -162,9 +162,24 @@ class Conversation:
             except asyncio.CancelledError:
                 break
             
+    async def close(self):
+        log.debug("close function called")
+        # Close the conversation
+        # ...
+        # self.control_stream.close() # TODO
+        self.control_stream = None
+            
 async def new_client_conversation(max_packet_size, queue_size, tls_state):
     log.debug(f"new_client_conversation function called with max_packet_size: {max_packet_size}, queue_size: {queue_size}, tls_state: {tls_state}")
     # Additional logic for creating a new client conversation
     result = Conversation(max_packet_size, queue_size, tls_state)
+    log.debug(f"new_client_conversation function returned result: {result}")
+    return result
+
+async def new_server_conversation(max_packet_size, queue_size, tls_state):
+    log.debug(f"new_client_conversation function called with max_packet_size: {max_packet_size}, queue_size: {queue_size}, tls_state: {tls_state}")
+    # Additional logic for creating a new client conversation
+    result = Conversation(max_packet_size, queue_size, tls_state)
+    result.conversation_id = generate_conversation_id(tls_state)
     log.debug(f"new_client_conversation function returned result: {result}")
     return result

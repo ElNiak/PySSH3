@@ -23,6 +23,12 @@ from ssh3.conversation import Conversation
 from ssh3.channel import *
 from util.linux_util.linux_user import User
 from linux_server.auth import *
+import util.globals as glob
+from http3.http3_server import *
+from starlette.applications import Router
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.responses import PlainTextResponse, Response
+
 
 log = logging.getLogger(__name__)
 
@@ -327,10 +333,20 @@ async def main():
     )
     args = parser.parse_args()
     
-     # import ASGI application
+    # import ASGI application
+    async def url_path_app(request):
+        """
+        HTTP echo endpoint.
+        """
+        log.info(f"Got request url_path_app : method: {request.method}, URL: {request.url.path}")
+        content = await request.body()
+        media_type = request.headers.get("content-type")
+        return Response(content, media_type=media_type)
+    
     module_str, attr_str = args.app.split(":", maxsplit=1)
     module = importlib.import_module(module_str)
-    application = getattr(module, attr_str)
+    router = getattr(module, "starlette")
+    glob.APPLICATION = getattr(module, attr_str)
     
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
@@ -409,16 +425,14 @@ async def main():
     # load SSL certificate and key
     configuration.load_cert_chain(args.certPath, args.keyPath)
     
+    glob.CONFIGURATION = configuration
+    
     wg = sync.WaitGroup()
     wg.add(1)
     
     log.info(f"Starting server on {args.bind}")
-    
-    
-    # await asyncio.Future()
-    
-    mux = Sanic(name="ssh3")
-    
+
+        
     def handle_conv(authenticatedUsername: str, conv: Conversation):
         log.info(f"Handling authentification for {authenticatedUsername}")
         authUser = util.linux_util.linux_user.get_user(authenticatedUsername)
@@ -447,7 +461,6 @@ async def main():
                 return
             if generic_message is None:
                 return
-            
             if generic_message.isinstance(ssh3_message.ChannelRequestMessage):
                 if generic_message.channel_request.isinstance(ssh3_channel.PtyRequest):
                     err = new_pty_req(authUser, channel, generic_message.channel_request, generic_message.want_reply)
@@ -488,30 +501,26 @@ async def main():
     # authenticated_username, new_conv, request_handler
     # asyncio.create_task(ssh3Handler(qconn, new_conv, conversations_manager))
     session_ticket_store = SessionTicketStore()
+    glob.SESSION_TICKET_HANDLER = session_ticket_store.add
     quic_server = await serve(
         args.bind.split(":")[0],
         args.bind.split(":")[1],
         configuration=configuration,
         create_protocol=AuthHttpServerProtocol,
-        # max_packet_size=30000,
-        # default_datagram_queue_size=10,
-        # conversation_handler=handle_auths,
-        # stream_handler=ssh3Handler,
         session_ticket_fetcher=session_ticket_store.pop,
-        session_ticket_handler=session_ticket_store.add,
-        # retry=retry,
+        session_ticket_handler=glob.SESSION_TICKET_HANDLER,
     )
    
     ssh3Server  = SSH3Server(30000,quic_server._create_protocol, 10, conversation_handler=handle_conv)
     ssh3Handler = ssh3Server.get_http_handler_func()
                     
-    # asyncio.create_task(handle_auths(args.enablePasswordLogin, 30000, ssh3Handler, quic_server))
-     
-    # mux.HandleFunc(*urlPath, linux_server.HandleAuths(context.Background(), *enablePasswordLogin, 30000, ssh3Handler))
-    # mux.add_route(ssh3Handler, args.urlPath)
-    # mux.add_route(handle_auths, args.urlPath)
-   
-    
+    glob.ENABLE_PASSWORD_LOGIN = args.enablePasswordLogin
+    glob.HANDLER_FUNC          = ssh3Handler
+    glob.QUIC_SERVER           = quic_server
+    router.router = Router(
+            [Route(args.urlPath+"", endpoint=handle_auths, methods=["CONNECT"]),], on_startup=None, on_shutdown=None, lifespan=None
+    )
+         
     log.info(f"Listening on {args.bind} with URL path {args.urlPath}")
     
     await asyncio.Future()

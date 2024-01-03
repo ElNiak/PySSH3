@@ -43,15 +43,17 @@ USER_AGENT = get_current_version()
 
 class URL:
     def __init__(self, url: str) -> None:
+        self.url = url
         parsed = urlparse(url)
-
         self.authority = parsed.netloc
         self.full_path = parsed.path or "/"
         if parsed.query:
             self.full_path += "?" + parsed.query
         self.scheme = parsed.scheme
         logger.debug(f"URL initialized with authority: {self.authority}, full_path: {self.full_path}, scheme: {self.scheme}")
-
+    
+    def __str__(self) -> str:
+        return self.url
 
 class HttpRequest:
     def __init__(
@@ -63,7 +65,6 @@ class HttpRequest:
     ) -> None:
         if headers is None:
             headers = {}
-
         self.content = content
         self.headers = headers
         self.method = method

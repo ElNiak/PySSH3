@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from typing import Callable, Tuple
 from ssh3.conversation import Conversation, ConversationsManager
 from http3.http3_server import *
@@ -8,6 +9,9 @@ import util.util as util
 import util.quic_util as quic_util
 from ssh3.version import parse_version  
 from ssh3.channel import *
+from starlette.responses import PlainTextResponse, Response
+from aioquic.quic.connection import NetworkAddress, QuicConnection
+
 log = logging.getLogger(__name__)
 
 class SSH3Server:
@@ -99,7 +103,7 @@ class SSH3Server:
         async with self.lock:
             self.conversations.pop(stream_creator, None)
 
-    async def handle_datagrams(self, context, qconn: QuicConnectionProtocol, new_conv):
+    async def handle_datagrams(self, qconn: QuicConnectionProtocol, new_conv):
         while True:
             try:
                 # Receive a datagram from the QUIC connection
@@ -133,7 +137,7 @@ class SSH3Server:
                     log.error(f"Could not receive message from connection: {e}")
                 return
     
-    async def manage_conversation(server, authenticated_username, new_conv, conversations_manager, stream_creator):
+    async def manage_conversation(self,server, authenticated_username, new_conv, conversations_manager, stream_creator):
         try:
             # Call the conversation handler
             await server.conversation_handler(authenticated_username, new_conv)
@@ -150,34 +154,36 @@ class SSH3Server:
             if new_conv:
                 await new_conv.close()
             if conversations_manager:
-                conversations_manager.remove_conversation(new_conv)
+                await conversations_manager.remove_conversation(new_conv)
             if stream_creator:
-                server.remove_connection(stream_creator)
+                await server.remove_connection(stream_creator)
     
     def get_http_handler_func(self):
         """
         Returns a handler function for authenticated HTTP requests.
         """
-        async def handler(authenticated_username, new_conv, request_handler):
-            log.info(f"Got request: method: {request_handler.scope['method']}, URL: {request_handler.scope['path']}")
-
-            if request_handler.scope['method'] == "CONNECT" and request_handler.scope['scheme'] == "ssh3":
+        async def handler(authenticated_username, new_conv, request):
+            log.info(f"Got auth request: {request}")
+            log.debug(f"request.url: {request.url}")
+            if request.method == "CONNECT" and request.headers.get("protocol", None) == "ssh3": # request.url.scheme == "ssh3": TODO
                 # Assuming that request_handler can act as a hijacker
-                stream_creator = request_handler.stream_creator
-                qconn = stream_creator  # assuming stream_creator is a QuicConnection
+                # stream_creator =QuicConnection(
+                #     configuration=glob.CONFIGURATION,
+                #     session_ticket_handler=glob.SESSION_TICKET_HANDLER
+                # )
+                
+                stream_creator = random.randint(0,10) # TODO
 
-                conversations_manager = self.get_or_create_conversations_manager(stream_creator)
-                conversations_manager.add_conversation(new_conv)
-
-                await request_handler.send({
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [],
-                })
+                conversations_manager = await self.get_or_create_conversations_manager(stream_creator)
+                await conversations_manager.add_conversation(new_conv)
 
                 # Handling datagrams and conversation
-                asyncio.create_task(self.handle_datagrams(qconn, new_conv, conversations_manager))
+                asyncio.create_task(self.handle_datagrams(new_conv, conversations_manager))
                 asyncio.create_task(self.manage_conversation(self, authenticated_username, new_conv, conversations_manager, stream_creator))
+                
+                return Response(status_code=200)
+            else:
+                return Response(status_code=404)
 
         return handler
     

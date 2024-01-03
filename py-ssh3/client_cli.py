@@ -19,7 +19,7 @@ import urllib
 from ssh3.ssh3_client import *
 from cryptography.hazmat.primitives import serialization
 from ssh3.version import *
-from auth.openid_connect import connect as oicd_connect
+# from auth.openid_connect import connect as oicd_connect
 from ssh3.conversation import *
 import getpass
 from ssh3.channel import *
@@ -289,7 +289,7 @@ async def main():
         is_client=True,
         max_datagram_frame_size=65536,
         max_datagram_size=defaults.max_datagram_size,
-        quic_logger = QuicFileLogger("qlogs/"),
+        quic_logger = QuicFileLogger("qlogs_client/"),
         secrets_log_file=secrets_log_file
     )
     configuration.verify_mode = ssl.CERT_REQUIRED if not args.insecure else ssl.CERT_NONE
@@ -321,6 +321,8 @@ async def main():
     
     logging.debug(f"Dialing QUIC host at {hostname}:{port}")
     
+    conv = None # uninitialized conversation
+    
     async def establish_client_connection(client):
         log.info(f"Establishing client connection with {client}")
         if not client or client == -1:
@@ -334,11 +336,16 @@ async def main():
         log.info(f"Conversation is {conv}")
         
         # HTTP request over QUIC
-        # perform request
-        req = HttpRequest(method="CONNECT", url=URL(url_from_param))
+        # perform request 
+        new_url = URL(url_from_param.replace("https","ssh3")) # TODO -> should replace Proto
+        log.info(f"New URL is {new_url}")
+        req = HttpRequest(method="CONNECT", url=new_url)
         req.headers['user-agent'] = get_current_version()
-        # req.protocol = "ssh3"
+        req.headers['protocol'] = "ssh3" # TODO -> should replace Proto
         log.info(f"Request is {req}")
+        # TODO seems not totally correct and secure
+        log.info(f"Request is {req}")
+        
         # await asyncio.gather(*coros)
         # req.Proto = "ssh3" # TODO
         # process http pushes
@@ -411,7 +418,8 @@ async def main():
             elif isinstance(method, OIDCAuthMethod): 
                 # Assuming an OIDC connection method
                 # TODO
-                token, err = oicd_connect(method.oidc_config(), method.oidc_config().issuer_url, method.do_pkce)
+                # token, err = oicd_connect(method.oidc_config(), method.oidc_config().issuer_url, method.do_pkce)
+                token, err = None, None
                 if err:
                     log.error(f"Could not get token: {err}")
                 else:

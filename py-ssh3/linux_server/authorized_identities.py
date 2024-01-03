@@ -6,7 +6,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.backends import default_backend
 from util.type import *
-from auth.openid_connect import *
 
 class Identity:
     def verify(self, candidate, base64_conversation_id):
@@ -89,4 +88,3 @@ def parse_authorized_identities_file(user, file_path):
                 logging.error(f"Cannot parse identity line {line_number}: {str(e)}")
     return identities
 
-# Define classes or functions as needed, for example, JWTTokenString or verify_raw_token

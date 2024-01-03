@@ -5,6 +5,10 @@ import logging
 from http3.http3_server import HttpRequestHandler
 from util.linux_util.linux_user import *
 from linux_server.authorized_identities import *
+import util.globals as glob
+from starlette.responses import PlainTextResponse, Response
+
+logger = logging.getLogger(__name__)
 
 def bearer_auth(headers: dict) -> Tuple[str, bool]:
     """
@@ -24,7 +28,7 @@ def parse_bearer_auth(auth: str) -> Tuple[str, bool]:
         return "", False
     return auth[len(prefix):], True
 
-def handle_bearer_auth(username: str, base64_conv_id: str, handler_func: Callable) -> Callable:
+def handle_bearer_auth(username: str, base64_conv_id: str) -> Callable:
     """
     HTTP handler function to handle Bearer authentication.
     """
@@ -33,11 +37,11 @@ def handle_bearer_auth(username: str, base64_conv_id: str, handler_func: Callabl
         if not ok:
             request_handler.send_unauthorized_response()
             return
-        await handler_func(bearer_string, base64_conv_id, request_handler)
+        await glob.HANDLER_FUNC(bearer_string, base64_conv_id, request_handler)
 
     return inner_handler
 
-def handle_jwt_auth(username: str, new_conv: object, handler_func: Callable) -> Callable:
+async def handle_jwt_auth(username: str, new_conv: object) -> Callable:
     """
     Validates JWT token and calls the handler function if authentication is successful.
     """
@@ -63,9 +67,46 @@ def handle_jwt_auth(username: str, new_conv: object, handler_func: Callable) -> 
 
         for identity in identities:
             if identity.verify(unauth_bearer_string, base64_conv_id):
-                await handler_func(username, new_conv, request_handler)
+                await glob.HANDLER_FUNC(username, new_conv, request_handler)
                 return
 
         request_handler.send_unauthorized_response()
 
     return inner_handler
+
+
+async def handle_basic_auth(request, conv):
+    # Extract Basic Auth credentials
+    username, password, ok = extract_basic_auth(request)
+    if not ok:
+        logger.error(f"Invalid basic auth credentials extraction")
+        status = 401
+        return Response(status_code=status)
+
+    # Replace this with your own authentication method
+    ok = user_password_authentication(username, password)
+    if not ok:
+        logger.error(f"Invalid basic auth credentials")
+        status = 401
+        return Response(status_code=status)
+    
+    return await glob.HANDLER_FUNC(username, conv, request)
+
+def extract_basic_auth(request):
+    auth_header = request.headers.get('authorization')
+    logger.info(f"Received authorization header {auth_header}")
+    if not auth_header:
+        return None, None, False
+
+    # Basic Auth Parsing
+    try:
+        auth_type, auth_info = auth_header.split(' ', 1)
+        if auth_type.lower() != 'basic':
+            logger.error(f"Invalid auth type {auth_type}")
+            return None, None, False
+
+        username, password = base64.b64decode(auth_info).decode().split(':', 1)
+        logger.info(f"Received username {username} and password {password}")
+        return username, password, True
+    except Exception as e:
+        return None, None, False

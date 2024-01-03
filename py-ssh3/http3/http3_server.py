@@ -25,7 +25,7 @@ from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicEvent
 from aioquic.quic.logger import QuicFileLogger
 from aioquic.tls import SessionTicket
-
+import util.globals as glob
 
 try:
     import uvloop
@@ -33,6 +33,7 @@ except ImportError:
     uvloop = None
     
 log = logging.getLogger(__name__)
+
 
 AsgiApplication = Callable
 HttpConnection = Union[H0Connection, H3Connection]
@@ -437,7 +438,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
                     transmit=self.transmit,
                 )
             self._handlers[event.stream_id] = handler
-            asyncio.ensure_future(handler.run_asgi(application))
+            asyncio.ensure_future(handler.run_asgi(glob.APPLICATION))
         elif (
             isinstance(event, (DataReceived, HeadersReceived))
             and event.stream_id in self._handlers

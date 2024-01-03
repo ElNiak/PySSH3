@@ -22,6 +22,7 @@ QVIS_URL = "https://qvis.quictools.info/"
 
 templates = Jinja2Templates(directory=os.path.join(ROOT, "asgi/templates"))
 
+# TODO clean 
 
 async def homepage(request):
     """
@@ -128,13 +129,14 @@ async def wt(scope: Scope, receive: Receive, send: Send) -> None:
 
 
 starlette = Starlette(
+    debug=True,
     routes=[
-        Route("/", homepage),
-        Route("/{size:int}", padding),
-        Route("/echo", echo, methods=["POST"]),
-        Route("/logs", logs),
-        WebSocketRoute("/ws", ws),
-        Mount(STATIC_URL, StaticFiles(directory=STATIC_ROOT, html=True)),
+        # Route("/", homepage),
+        # Route("/{size:int}", padding),
+        # Route("/echo", echo, methods=["POST"]),
+        # Route("/logs", logs),
+        # WebSocketRoute("/ws", ws),
+        # Mount(STATIC_URL, StaticFiles(directory=STATIC_ROOT, html=True)),
     ]
 )
 

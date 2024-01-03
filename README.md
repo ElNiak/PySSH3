@@ -19,8 +19,8 @@ make env; make install;
 ### PySSH3 server
 
 ```bash
-./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --help
-./ssh3_env/bin/activate && python3 py-ssh3/server_cli.py --generateSelfSignedCert --enablePasswordLogin --bind "127.0.0.1:4443" --urlPath "/my-secret-path" --verbose --insecure
+./ssh3_env/bin/activate && sudo -E env PATH=$PATH python3 py-ssh3/server_cli.py --help
+./ssh3_env/bin/activate && sudo -E env PATH=$PATH python3 py-ssh3/server_cli.py --generateSelfSignedCert --enablePasswordLogin --bind "127.0.0.1:4443" --urlPath "/my-secret-path" --verbose --insecure
 ```
 
 #### Authorized keys and authorized identities 
@@ -52,3 +52,4 @@ TODO
 - [ ] Add threading support
 - [ ] Inspire more from [paramiko]
 - [ ] Secure version
+- [ ] request.url.scheme == "ssh3"

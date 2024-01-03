@@ -1,10 +1,12 @@
 import base64
 import logging
+import util.globals as glob
 from typing import Callable
 from util.linux_util.linux_user import *
 from aioquic.asyncio.server import QuicServer
 from linux_server.handlers import *
 from ssh3.version import *
+from ssh3.conversation import *
 from http3.http3_server import HttpServerProtocol
 from aioquic.h3.connection import H3_ALPN, H3Connection
 from aioquic.h3.events import (
@@ -16,12 +18,13 @@ from aioquic.h3.events import (
 )
 from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicEvent
 from ssh3.version import *
+from starlette.responses import PlainTextResponse, Response
+from aioquic.tls import *
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = get_current_version()
-
 
 class AuthHttpServerProtocol(HttpServerProtocol):
     def __init__(self, *args, **kwargs) -> None:
@@ -43,92 +46,84 @@ class AuthHttpServerProtocol(HttpServerProtocol):
 
 
 
-# async def handle_auths(
-#     enable_password_login: bool,
-#     default_max_packet_size: int,
-#     handler_func: callable,
-#     quic_server: QuicServer,
-# ):
-#     """
-#     Handle different types of authentication for a given HTTP request.
-#     """
-#     # Set response server header
-#     # request_handler = quic_server._create_protocol.request_handler
-#     request_handler.send({
-#         "type": "http.response.start",
-#         "status": 200,
-#         "headers": [(b"server", b"MySSH3Server")]  # Replace with your server version
-#     })
+async def handle_auths(
+    request
+):
+    """
+    Handle different types of authentication for a given HTTP request.
+    enable_password_login: bool,
+    default_max_packet_size: int,
+    handler_func: callable,
+    quic_server: QuicServer
+    """
+   
+    # Set response server header
+    content = ""
+    status = 200
+    header = [(b"Server", SERVER_NAME)] 
 
-#     # Check SSH3 version
-#     user_agent = request_handler.scope["headers"].get(b"user-agent", b"").decode()
-#     major, minor, patch = parse_version(user_agent)  # Implement this function
-#     if major != MAJOR or minor != MINOR:  
-#         request_handler.send({
-#             "type": "http.response.body",
-#             "body": b"Unsupported version",
-#             "more_body": False,
-#         })
-#         return
+    # Check SSH3 version
+    user_agent = b""
+    for h,v in request["headers"]:
+        if h == b"user-agent":
+            try:
+                user_agent = v.decode()
+            except InvalidSSHVersion:
+                logger.debug(f"Received invalid SSH version: {v}")
+                status = 400
+                return Response(content=b"Invalid version", 
+                        headers=header,
+                        status_code=status)
+        
+    major, minor, patch = parse_version(user_agent)  # Implement this function
+    if major != MAJOR or minor != MINOR:  
+        return Response(content=b"Unsupported version", 
+                        headers=header,
+                        status_code=status)
+    
+    protocols_keys = list(glob.QUIC_SERVER._protocols.keys())
+    tls_state = glob.QUIC_SERVER._protocols[protocols_keys[-1]]._quic.tls.state # TODO should be more modular, if if there is multiple protocols
+    logger.info(f"TLS state is {tls_state}")
+    # Check if connection is complete
+    if not tls_state == State.SERVER_POST_HANDSHAKE:
+        status = 425
+        return Response(content="", 
+                        headers=header,
+                        status_code=status)
 
-#     # Check if connection is complete
-#     if not isinstance(request_handler.connection._quic, QuicConnection) or not request_handler.connection._quic._handshake_complete:
-#         request_handler.send({
-#             "type": "http.response.start",
-#             "status": 425,  # HTTP StatusTooEarly
-#             "headers": []
-#         })
-#         return
-
-#     # Create a new conversation
-#     # Implement NewServerConversation based on your protocol's specifics
-#     conv = await NewServerConversation(
-#         request_handler.connection._quic,
-#         default_max_packet_size
-#     )
-
-#     # Handle authentication
-#     authorization = request_handler.scope["headers"].get(b"authorization", b"").decode()
-#     if enable_password_login and authorization.startswith("Basic "):
-#         await handle_basic_auth(handler_func, conv, request_handler)
-#     elif authorization.startswith("Bearer "):
-#         username = request_handler.scope["headers"].get(b":path").decode().split("?", 1)[0].lstrip("/")
-#         conv_id = base64.b64encode(conv.id).decode()
-#         await HandleBearerAuth(username, conv_id, handler_func, request_handler)
-#     else:
-#         request_handler.send({
-#             "type": "http.response.start",
-#             "status": 401,
-#             "headers": [(b"www-authenticate", b"Basic")]
-#         })
-
-#     await request_handler.transmit()
-
-# async def handle_basic_auth(request, handler_func, conv, request_handler):
-#     # Extract Basic Auth credentials
-#     username, password, ok = extract_basic_auth(request)
-#     if not ok:
-#         return web.Response(status=401)
-
-#     # Replace this with your own authentication method
-#     ok = await user_password_authentication(username, password)
-#     if not ok:
-#         return web.Response(status=401)
-
-#     return await handler_func(username, conv, request)
-
-# def extract_basic_auth(request):
-    # auth_header = request.headers.get('Authorization')
-    # if not auth_header:
-    #     return None, None, False
-
-    # # Basic Auth Parsing
-    # try:
-    #     auth_type, auth_info = auth_header.split(' ', 1)
-    #     if auth_type.lower() != 'basic':
-    #         return None, None, False
-
-    #     username, password = base64.b64decode(auth_info).decode().split(':', 1)
-    #     return username, password, True
-    # except Exception as e:
-    #     return None, None, False
+    # Create a new conversation
+    # Implement NewServerConversation based on your protocol's specifics
+    conv = await new_server_conversation(
+        max_packet_size=glob.DEFAULT_MAX_PACKET_SIZE,
+        queue_size=10,
+        tls_state= tls_state
+    )
+    logger.info(f"Created new conversation {conv}")
+    # Handle authentication
+    authorization = b""
+    for h,v in request["headers"]:
+        if h == b"authorization":
+            try:
+                authorization = v.decode()
+            except Exception:
+                logger.debug(f"Received invalid authorization version: {v}")
+                status = 400
+                return Response(content=b"Invalid authorization", 
+                        headers=header,
+                        status_code=status)
+    logger.info(f"Received authorization {authorization}")
+    if glob.ENABLE_PASSWORD_LOGIN and authorization.startswith("Basic "):
+        logger.info("Handling basic auth")
+        return await handle_basic_auth(request=request, conv=conv)
+    elif authorization.startswith("Bearer "):
+        logger.info("Handling bearer auth")
+        username = request.headers.get(b":path").decode().split("?", 1)[0].lstrip("/")
+        conv_id = base64.b64encode(conv.id).decode()
+        return await handle_bearer_auth(username, conv_id)
+    else:
+        logger.info("Handling no auth")
+        header.append((b"www-authenticate", b"Basic"))
+        status = 401
+        return Response(content=content, 
+                    headers=header,
+                    status_code=status)

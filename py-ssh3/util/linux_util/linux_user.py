@@ -3,6 +3,7 @@ from pwd import getpwnam
 from crypt import crypt
 import subprocess
 import os
+import spwd
 
 class User:
     def __init__(self, username, uid, gid, dir, shell):
@@ -18,15 +19,8 @@ class ShadowEntry:
         self.password = password
 
 def getspnam(name):
-    libc = ctypes.CDLL("libc.so.6")
-    size = libc.size_of_shadow()
-    buf = ctypes.create_string_buffer(size)
-    result = libc.getspnam_r(ctypes.c_char_p(name.encode()), buf, buf, size)
-    if result != 0:
-        raise ValueError("User not found")
-
-    spwd = ctypes.cast(buf, ctypes.POINTER(ctypes.Struct_spwd)).contents
-    return ShadowEntry(spwd.sp_namp.decode(), spwd.sp_pwdp.decode())
+    password = spwd.getspnam(name)
+    return ShadowEntry(password.sp_namp, password.sp_pwdp)
 
 def user_password_authentication(username, password):
     shadow_entry = getspnam(username)
