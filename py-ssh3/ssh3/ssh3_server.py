@@ -106,7 +106,7 @@ class SSH3Server:
         while True:
             try:
                 # Receive a datagram from the QUIC connection
-                dgram = await qconn.receive_datagram()
+                dgram = qconn.datagram_received()
 
                 # Process the datagram
                 # Assuming quic_util.read_var_int and util.bytes_read_closer are defined to parse the conversation ID
@@ -150,10 +150,10 @@ class SSH3Server:
 
         finally:
             # Perform cleanup on conversation completion or error
-            if new_conv:
-                await new_conv.close()
             if conversations_manager:
                 await conversations_manager.remove_conversation(new_conv)
+            if new_conv:
+                await new_conv.close() # move after remove_conversation? because: File "/usr/lib/python3.8/asyncio/transports.py", line 35, in close raise NotImplementedError
             if stream_creator:
                 await server.remove_connection(stream_creator)
     
@@ -163,31 +163,37 @@ class SSH3Server:
         """
         async def handler(authenticated_username, new_conv, request):
             log.info(f"Got auth request: {request}")
+            log.debug(f"request: {dir(request)}")
+            # for attr in dir(request):
+            #     try:
+            #         log.debug(f"request.{attr}: {getattr(request, attr)}") # TODO  AuthenticationMiddleware must be installed to access request.auth
+            #     except Exception as e:
+            #         pass
             log.debug(f"request.url: {request.url}")
-            if request.method == "CONNECT" and request.headers.get("protocol", None) == "ssh3": # request.url.scheme == "ssh3": TODO
+            log.debug(f"request.header: {request.headers}")
+            if request.method == "CONNECT" and request.scope.get("scheme", None) == "ssh3": # request.url.scheme == "ssh3": TODO
                 # Assuming that request_handler can act as a hijacker
                 
                 protocols_keys = list(glob.QUIC_SERVER._protocols.keys())
                 prot = glob.QUIC_SERVER._protocols[protocols_keys[-1]]
-    
                 hijacker = prot.hijacker #self.h3_server.hijacker
                 stream_creator = hijacker.stream_creator()
-                # stream_creator =QuicConnection(
-                #     configuration=glob.CONFIGURATION,
-                #     session_ticket_handler=glob.SESSION_TICKET_HANDLER
-                # )
-                
-                stream_creator = random.randint(0,10) # TODO
-
+                qcon = hijacker.protocol
+  
                 conversations_manager = await self.get_or_create_conversations_manager(stream_creator)
                 await conversations_manager.add_conversation(new_conv)
 
                 # Handling datagrams and conversation
-                asyncio.create_task(self.handle_datagrams(new_conv, conversations_manager))
-                asyncio.create_task(self.manage_conversation(self, authenticated_username, new_conv, conversations_manager, stream_creator))
+                asyncio.create_task(self.handle_datagrams(qconn=qcon,new_conv=new_conv))
+                asyncio.create_task(self.manage_conversation(server=self, 
+                                                             authenticated_username=authenticated_username, 
+                                                             new_conv=new_conv, 
+                                                             conversations_manager=conversations_manager, 
+                                                             stream_creator=stream_creator))
                 
                 return Response(status_code=200)
             else:
+                logger.error(f"Invalid request: {request.headers}, {request.scope}")
                 return Response(status_code=404)
 
         return handler

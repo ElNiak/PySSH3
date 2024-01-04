@@ -34,11 +34,13 @@ except ImportError:
     
 log = logging.getLogger(__name__)
 
+from ssh3.version import get_current_version
+
 
 AsgiApplication = Callable
 HttpConnection = Union[H0Connection, H3Connection]
 
-SERVER_NAME = "aioquic/" + aioquic.__version__
+SERVER_NAME = get_current_version()
 
 
 class HttpRequestHandler:
@@ -65,6 +67,7 @@ class HttpRequestHandler:
             self.queue.put_nowait({"type": "http.request"})
 
     def http_event_received(self, event: H3Event) -> None:
+        log.debug("HTTP event received: %s", event)
         if isinstance(event, DataReceived):
             self.queue.put_nowait(
                 {
@@ -332,7 +335,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
         super().__init__(*args, **kwargs)
         self._handlers: Dict[int, Handler] = {}
         self._http: Optional[HttpConnection] = None
-        self.hijacker = Hijacker(self)
+        
 
     def http_event_received(self, event: H3Event) -> None:
         log.debug("HTTP event received: %s", event)
@@ -361,7 +364,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
             else:
                 path_bytes, query_string = raw_path, b""
             path = path_bytes.decode()
-            self._quic._logger.info("HTTP request %s %s", method, path)
+            self._quic._logger.info("HTTP request %s %s %s", method, path, protocol)
 
             # FIXME: add a public API to retrieve peer address
             client_addr = self._http._quic._network_paths[0].addr
@@ -413,6 +416,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
                     transmit=self.transmit,
                 )
             else:
+                scheme = protocol
                 extensions: Dict[str, Dict] = {}
                 if isinstance(self._http, H3Connection):
                     extensions["http.response.push"] = {}
@@ -426,8 +430,10 @@ class HttpServerProtocol(QuicConnectionProtocol):
                     "query_string": query_string,
                     "raw_path": raw_path,
                     "root_path": "",
-                    "scheme": "https",
+                    "scheme": scheme,
                     "type": "http",
+                    "stream_ended":event.stream_ended,
+                    "stream_id":event.stream_id,
                 }
                 handler = HttpRequestHandler(
                     authority=authority,

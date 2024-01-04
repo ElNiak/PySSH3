@@ -14,7 +14,7 @@ def bearer_auth(headers: dict) -> Tuple[str, bool]:
     """
     Extracts the bearer token from the Authorization header.
     """
-    auth = headers.get("authorization", "")
+    auth = headers.get(":authorization", "")
     if not auth:
         return "", False
     return parse_bearer_auth(auth)
@@ -89,7 +89,7 @@ async def handle_basic_auth(request, conv):
         logger.error(f"Invalid basic auth credentials")
         status = 401
         return Response(status_code=status)
-    
+
     return await glob.HANDLER_FUNC(username, conv, request)
 
 def extract_basic_auth(request):

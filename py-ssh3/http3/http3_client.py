@@ -6,7 +6,7 @@ import pickle
 import ssl
 import time
 from collections import deque
-from typing import BinaryIO, Callable, Deque, Dict, List, Optional, Union, cast
+from typing import BinaryIO, Callable, Deque, Dict, List, Optional, Union, cast, Tuple
 from urllib.parse import urlparse
 
 import aioquic
@@ -21,6 +21,7 @@ from aioquic.h3.events import (
     H3Event,
     HeadersReceived,
     PushPromiseReceived,
+    DatagramReceived
 )
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import QuicEvent
@@ -230,6 +231,8 @@ class HttpClient(QuicConnectionProtocol):
     def quic_event_received(self, event: QuicEvent) -> None:
         #  pass event to the HTTP layer
         logger.debug(f"HttpClient received QUIC event: {event}")   
+        if isinstance(event, DatagramReceived):
+            self.handle_datagram(event.data)
         if self._http is not None:
             for http_event in self._http.handle_event(event):
                 self.http_event_received(http_event)
@@ -242,10 +245,10 @@ class HttpClient(QuicConnectionProtocol):
                 (b":method", request.method.encode()),
                 (b":scheme", request.url.scheme.encode()),
                 (b":authority", request.url.authority.encode()),
-                (b":path", request.url.full_path.encode()),
-                (b"user-agent", USER_AGENT.encode()),
+                (b":path", request.url.full_path.encode())
             ]
-            + [(k.encode(), v.encode()) for (k, v) in request.headers.items()],
+            + [(k.encode(), v.encode()) for (k, v) in request.headers.items()] 
+            + [(b"user-agent", USER_AGENT.encode())],
             end_stream=not request.content,
         )
         if request.content:
@@ -257,10 +260,101 @@ class HttpClient(QuicConnectionProtocol):
         self._request_events[stream_id] = deque()
         self._request_waiter[stream_id] = waiter
         self.transmit()
-        logger.debug(f"HttpClient _request called with request: {request}")
+        head = [  # For debug
+                (b":method", request.method.encode()),
+                (b":scheme", request.url.scheme.encode()),
+                (b":authority", request.url.authority.encode()),
+                (b":path", request.url.full_path.encode())
+            ] + [(k.encode(), v.encode()) for (k, v) in request.headers.items()]  + [(b"user-agent", USER_AGENT.encode())]
+        logger.debug(f"HttpClient _request called with request: {request} and header: {head}")
         return await asyncio.shield(waiter)
 
 
+
+class RoundTripper:
+    def __init__(self, quic_config: Optional[QuicConfiguration] = None,
+                 tls_config: Optional[ssl.SSLContext] = None,
+                 dial: Optional[Callable] = None,
+                 save_session_ticket: Optional[Callable[[SessionTicket], None]] = None,
+                 hijack_stream: Optional[Callable] = None):
+        self.quic_config = quic_config or QuicConfiguration(is_client=True, alpn_protocols=H3_ALPN)
+        self.tls_config = tls_config or ssl.create_default_context()
+        self.dial = dial
+        self.save_session_ticket = save_session_ticket or self._default_save_session_ticket
+        self.hijack_stream = hijack_stream or self._default_hijack_stream
+        self.connections: Dict[Tuple[str, int], QuicConnectionProtocol] = {}
+        self.last_used = {}
+        
+    async def _get_or_create_client(self, host, port):
+        key = (host, port)
+        if key not in self.connections:
+            connection = await connect(
+                host=host,
+                port=port,
+                configuration=self.quic_config,
+                create_protocol=HttpClient,
+                session_ticket_handler=self._save_session_ticket,
+                local_port=0,  # Replace with desired local port if needed
+                wait_connected=True,
+            )
+            self.connections[key] = connection
+        self.last_used[key] = time.time()
+        return self.connections[key]
+
+    def _cleanup_connections(self):
+        """Close connections that have been idle for a certain threshold."""
+        idle_threshold = 60  # seconds
+        current_time = time.time()
+        for key, last_used_time in list(self.last_used.items()):
+            if current_time - last_used_time > idle_threshold:
+                self.connections[key]._quic.close()
+                del self.connections[key]
+                del self.last_used[key]
+                
+    async def round_trip(self, request: HttpRequest) -> Deque[H3Event]:
+        self._cleanup_connections()  # Clean up idle connections
+        url = request.url
+        parsed = urlparse(url)
+        assert parsed.scheme == "https", "Only https:// URLs are supported."
+        host = parsed.hostname
+        port = parsed.port or 443
+
+        # Get or create a QUIC client for the given host and port
+        client = await self._get_or_create_client(host, port)
+        client = cast(HttpClient, client)
+
+        # Use the client to perform an HTTP request
+        if request.method == "GET":
+            return await client.get(url)
+        elif request.method == "POST":
+            return await client.post(url, request.content, request.headers)
+        else:
+            raise ValueError("Unsupported HTTP method")
+
+    def _default_save_session_ticket(self, ticket: SessionTicket) -> None:
+        # Implement session ticket saving logic if needed
+        # TODO 
+        logger.info("New session ticket received -  TODO")
+        # if args.session_ticket:
+        #     with open(args.session_ticket, "wb") as fp:
+        #         pickle.dump(ticket, fp)
+
+    async def send_datagram(self, data: bytes, host: str, port: int):
+        client = await self._get_or_create_client(host, port)
+        client = cast(HttpClient, client)
+        client._quic.send_datagram_frame(data)
+
+    async def _default_hijack_stream(self, stream_id: int, host: str, port: int):
+        client = await self._get_or_create_client(host, port)
+        client = cast(HttpClient, client)
+        
+        # Example: reading directly from a stream
+        stream = client._quic._get_or_create_stream_for_receive(stream_id)
+        data = await stream.receive_some()
+        # Process data...
+
+        # Similar methods can be implemented for writing to a stream.
+        
 async def perform_http_request(
     client: HttpClient,
     url: str,

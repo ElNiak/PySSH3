@@ -9,7 +9,7 @@ import logging
 # import asyncio
 import os
 import logging
-import util.linux_util
+from util.linux_util import *
 import message.message as ssh3_message
 import message.channel_request as ssh3_channel
 import argparse
@@ -21,7 +21,7 @@ from sanic import Sanic
 from ssh3.ssh3_server import SSH3Server
 from ssh3.conversation import Conversation
 from ssh3.channel import *
-from util.linux_util.linux_user import User
+from util.linux_util.linux_user import User, get_user
 from linux_server.auth import *
 import util.globals as glob
 from http3.http3_server import *
@@ -435,7 +435,7 @@ async def main():
         
     def handle_conv(authenticatedUsername: str, conv: Conversation):
         log.info(f"Handling authentification for {authenticatedUsername}")
-        authUser = util.linux_util.linux_user.get_user(authenticatedUsername)
+        authUser = get_user(authenticatedUsername)
         
         channel, err = conv.accept_channel()
         if err != None:

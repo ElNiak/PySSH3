@@ -12,6 +12,7 @@ class HTTPStreamer:
     def __init__(self, stream_reader, stream_writer):
         self.stream_reader = stream_reader
         self.stream_writer = stream_writer
+        self.stream_id     = stream_writer._transport.stream_id
 
     async def read(self, size):
         return await self.stream_reader.read(size)
@@ -31,11 +32,11 @@ class StreamCreator:
         self.protocol = protocol
 
     async def open_stream(self) -> HTTPStreamer:
-        reader, writer = await self.protocol._quic.create_stream()
+        reader, writer = await self.protocol.create_stream()
         return HTTPStreamer(reader, writer)
 
     async def open_uni_stream(self) -> HTTPStreamer:
-        reader, writer = await self.protocol._quic.create_unidirectional_stream()
+        reader, writer = await self.protocol.create_stream(is_unidirectional=True)
         return HTTPStreamer(reader, writer)
 
     def local_addr(self):

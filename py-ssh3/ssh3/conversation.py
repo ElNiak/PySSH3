@@ -55,25 +55,26 @@ class Conversation:
         self.cancel_context = None  # Will be set using context manager
         self.conversation_id = conversation_id
         self.channels_accept_queue = None  # Set to an appropriate queue type
-        log.debug(f"Conversation object created with control_stream: {control_stream}, max_packet_size: {max_packet_size}, default_datagrams_queue_size: {default_datagrams_queue_size}, stream_creator: {stream_creator}, message_sender: {message_sender}, channels_manager: {channels_manager}, conversation_id: {conversation_id}")
+        log.debug(f"Conversation ({self}) object created with control_stream: {control_stream}, max_packet_size: {max_packet_size}, default_datagrams_queue_size: {default_datagrams_queue_size}, stream_creator: {stream_creator}, message_sender: {message_sender}, channels_manager: {channels_manager}, conversation_id: {conversation_id}")
 
-    def __init__(self, max_packet_size, default_datagrams_queue_size, tls: ssl.SSLContext):
-        self.conv_id, err = generate_conversation_id(tls)
-        if err:
-            log.error(f"could not generate conversation ID: {err}")
-            raise err
-
+    def __init__(self, max_packet_size, default_datagrams_queue_size, tls: ssl.SSLContext):        
         self.control_stream = None
         self.channels_accept_queue = util.AcceptQueue()  # Assuming a suitable implementation
         self.stream_creator = None
         self.max_packet_size = max_packet_size
         self.default_datagrams_queue_size = default_datagrams_queue_size
         self.channels_manager = ChannelsManager()  # Assuming a suitable implementation
-        self.conversation_id = self.conv_id
-        log.debug(f"Conversation object created with max_packet_size: {max_packet_size}, default_datagrams_queue_size: {default_datagrams_queue_size}, tls: {tls}")
+        self.conversation_id, err = generate_conversation_id(tls)
+        if err:
+            log.error(f"could not generate conversation ID: {err}")
+            raise err
+        log.debug(f"Conversation ({self}) object created with max_packet_size: {max_packet_size}, default_datagrams_queue_size: {default_datagrams_queue_size}, tls: {tls}")
 
     def __str__(self) -> str:
-        return f"conversation: {self.conversation_id}"
+        return f"Conversation {self.conversation_id}, {self.control_stream}, {self.channels_accept_queue}, {self.stream_creator}, {self.max_packet_size}, {self.default_datagrams_queue_size}, {self.channels_manager}"
+    
+    def accept_channel(self):
+        pass
     
     async def establish_client_conversation(self, request:HttpRequest, round_tripper: HttpClient):
         log.debug(f"establish_client_conversation function called with request: {request}, round_tripper: {round_tripper}")
@@ -136,21 +137,31 @@ class Conversation:
         # Performing the HTTP request
         # response = await request
         response = await round_tripper._request(request)
-        log.debug(f"Established conversation with server: {response}")
-        server_version = response.headers.get("server")
-        log.debug(f"Established conversation with server: {server_version}")
-        major, minor, patch = parse_version(server_version)
-
-        if response.status_code == 200:
-            self.control_stream = response.http_stream
-            self.stream_creator = response.stream_creator
-            self.message_sender = response.http_connection._quic
-            await self.handle_datagrams(round_tripper)
-            return None
-        elif response.status_code == 401:
-            raise Exception("Authentication failed")
-        else:
-            raise Exception(f"Returned non-200 and non-401 status code: {response.status_code}")
+        for http_event in response:
+            if isinstance(http_event, HeadersReceived):
+                log.debug(f"Established conversation with server: {http_event}")
+                server_version = -1
+                major, minor, patch = -1,-1,-1
+                status = 500
+                for h,v in http_event.headers:
+                    log.debug(f"Established conversation with server: {h} : {v}")
+                    if b':status' in h:
+                        status = int(v.decode('utf-8'))
+                    elif b'server' in h:
+                        server_version = v.decode('utf-8')
+                        major, minor, patch = parse_version(server_version)
+                        log.debug(f"Established conversation with server: {server_version}")
+                # TODO if status == -1 etc
+                if status == 200: # TODO
+                    self.control_stream = http_event.http_stream
+                    self.stream_creator = http_event.stream_creator
+                    self.message_sender = http_event.http_connection._quic
+                    await self.handle_datagrams(round_tripper)
+                    return None
+                elif status == 401:
+                    raise Exception("Authentication failed")
+                else:
+                    raise Exception(f"Returned non-200 and non-401 status code: {status}")
 
     async def handle_datagrams(self, connection):
         log.debug("handle_datagrams function called with connection: {connection}")
@@ -166,8 +177,16 @@ class Conversation:
         log.debug("close function called")
         # Close the conversation
         # ...
-        # self.control_stream.close() # TODO
+        # self.control_stream.close() # TODO not implemented in aioquic
         self.control_stream = None
+        
+    async def add_datagram(self,dgram):
+        log.debug(f"add_datagram function called with dgram: {dgram}")
+        # Add a datagram to the conversation
+        # ...
+        self.message_sender.send_datagram(dgram)
+        
+    
             
 async def new_client_conversation(max_packet_size, queue_size, tls_state):
     log.debug(f"new_client_conversation function called with max_packet_size: {max_packet_size}, queue_size: {queue_size}, tls_state: {tls_state}")
@@ -176,10 +195,11 @@ async def new_client_conversation(max_packet_size, queue_size, tls_state):
     log.debug(f"new_client_conversation function returned result: {result}")
     return result
 
-async def new_server_conversation(max_packet_size, queue_size, tls_state):
+async def new_server_conversation(max_packet_size, queue_size, tls_state,control_stream,stream_creator):
     log.debug(f"new_client_conversation function called with max_packet_size: {max_packet_size}, queue_size: {queue_size}, tls_state: {tls_state}")
     # Additional logic for creating a new client conversation
     result = Conversation(max_packet_size, queue_size, tls_state)
-    result.conversation_id = generate_conversation_id(tls_state)
+    result.control_stream = control_stream
+    result.stream_creator = stream_creator
     log.debug(f"new_client_conversation function returned result: {result}")
     return result

@@ -302,6 +302,10 @@ async def main():
         configuration.keylog_file = key_log
         
     log.info(f"TLS configuration is {configuration}")
+    
+    tls_config = None # TODO
+    
+    round_tripper = RoundTripper(quic_config=configuration,tls_config=tls_config)
         
     ssh_auth_sock = os.getenv('SSH_AUTH_SOCK')
     log.debug(f"SSH_AUTH_SOCK is {ssh_auth_sock}")
@@ -340,8 +344,8 @@ async def main():
         new_url = URL(url_from_param.replace("https","ssh3")) # TODO -> should replace Proto
         log.info(f"New URL is {new_url}")
         req = HttpRequest(method="CONNECT", url=new_url)
-        req.headers['user-agent'] = get_current_version()
-        req.headers['protocol'] = "ssh3" # TODO -> should replace Proto
+        # req.headers[b'user-agent'] = get_current_version()
+        req.headers[':protocol'] = "ssh3" # TODO -> should replace Proto
         log.info(f"Request is {req}")
         # TODO seems not totally correct and secure
         log.info(f"Request is {req}")
@@ -453,7 +457,7 @@ async def main():
             exit(-1)
 
     
-    async def dial_quic_host(hostname, port, quic_config, known_hosts_path, establish_client_connection):
+    async def dial_quic_host(hostname, port, quic_config, known_hosts_path):
         try:
             # Check if hostname is an IP address and format it appropriately
             try:
@@ -474,7 +478,8 @@ async def main():
                 # Connection established
                 client = cast(HttpClient, client)
                 log.info(f"Connected to {hostname}:{port} with client {client}")
-                await establish_client_connection(client)
+                return client
+                # await establish_client_connection(client)
                 # coros = [
                 #     perform_http_request(
                 #         client=client,
@@ -487,9 +492,9 @@ async def main():
                 # ]
                 # await asyncio.gather(*coros)
 
-                log.info(f"Push HTTP event{client}")
-                process_http_pushes(client=client,include=False,output_dir=None)
-                client._quic.close(error_code=ErrorCode.H3_NO_ERROR)
+                # log.info(f"Push HTTP event{client}")
+                # process_http_pushes(client=client,include=False,output_dir=None)
+                # client._quic.close(error_code=ErrorCode.H3_NO_ERROR)
 
         except ssl.SSLError as e:
             logging.error("TLS error: %s", e)
@@ -535,13 +540,22 @@ async def main():
 
         
     log.info(f"Starting client to {url_from_param}")
-    await dial_quic_host(
+    client = await dial_quic_host(
         hostname=hostname,
         port=port,
         quic_config=configuration,
-        known_hosts_path=known_hosts_path,
-        establish_client_connection=establish_client_connection
+        known_hosts_path=known_hosts_path
     )
+    
+    if client == -1 or client == 0:
+        return
+    
+    # // TODO: could be nice ?? dirty hack: ensure only one QUIC connection is used
+    def dial(addr:str, tls_config, quic_config):
+        return client, None 
+    round_tripper.dial = dial
+    
+    await establish_client_connection(client)
     
     try:
         channel = conv.open_channel("session", 30000, 0)
