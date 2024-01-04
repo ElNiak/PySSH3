@@ -76,7 +76,7 @@ class Conversation:
     def accept_channel(self):
         pass
     
-    async def establish_client_conversation(self, request:HttpRequest, round_tripper: HttpClient):
+    async def establish_client_conversation(self, request:HttpRequest, round_tripper: RoundTripper):
         log.debug(f"establish_client_conversation function called with request: {request}, round_tripper: {round_tripper}")
         # Stream hijacker
         def stream_hijacker(frame_type, stream_id, data, end_stream):
@@ -93,12 +93,10 @@ class Conversation:
             if frame_type != SSH_FRAME_TYPE:
                 # If the frame type is not what we're interested in, ignore it
                 return False, None
-
             try:
                 # Parse the header from the data
                 control_stream_id, channel_type, max_packet_size = parse_header(stream_id, data)
-                
-                 # Create a new channel
+                # Create a new channel
                 channel_info = ChannelInfo(
                     conversation_id=self.conversation_id,
                     conversation_stream_id=control_stream_id,
@@ -106,7 +104,6 @@ class Conversation:
                     channel_type=channel_type,
                     max_packet_size=max_packet_size
                 )
-
                 new_channel = ChannelImpl(
                     channel_info.conversation_stream_id,
                     channel_info.conversation_id,
@@ -121,22 +118,20 @@ class Conversation:
                 # Set the datagram sender and add the new channel to the queue
                 new_channel.set_datagram_sender(self.get_datagram_sender_for_channel(new_channel.channel_id))
                 self.channels_accept_queue.add(new_channel)
-
                 return True, None
             except Exception as e:
                 # Log the error and return False with the error
                 log.error(f"Error in stream hijacker: {e}")
                 return False, e
 
-
         # Assigning the hijacker to the round_tripper
-        # round_tripper._stream_handler = stream_hijacker
+        round_tripper.hijack_stream = stream_hijacker
         
         log.debug(f"Establishing conversation with server: {request}")
-
+        response = await round_tripper.round_trip_opt(request=request, opt=RoundTripOpt(dont_close_request_stream=True))
+        
+        log.debug(f"Established conversation with server: {response}")
         # Performing the HTTP request
-        # response = await request
-        response = await round_tripper._request(request)
         for http_event in response:
             if isinstance(http_event, HeadersReceived):
                 log.debug(f"Established conversation with server: {http_event}")
@@ -185,9 +180,7 @@ class Conversation:
         # Add a datagram to the conversation
         # ...
         self.message_sender.send_datagram(dgram)
-        
-    
-            
+                
 async def new_client_conversation(max_packet_size, queue_size, tls_state):
     log.debug(f"new_client_conversation function called with max_packet_size: {max_packet_size}, queue_size: {queue_size}, tls_state: {tls_state}")
     # Additional logic for creating a new client conversation

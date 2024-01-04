@@ -75,7 +75,6 @@ class HttpRequest:
     def __str__(self):
         return f"HttpRequest(method={self.method}, url={self.url}, content={self.content}, headers={self.headers})"
 
-
 class WebSocket:
     def __init__(
         self, http: HttpConnection, stream_id: int, transmit: Callable[[], None]
@@ -170,7 +169,18 @@ class HttpClient(QuicConnectionProtocol):
         return await self._request(
             HttpRequest(method="POST", url=URL(url), content=data, headers=headers)
         )
-
+        
+    async def co(
+        self, url: str, headers: Optional[Dict] = None
+    ) -> Deque[H3Event]:
+        """
+        Perform a POST request.
+        """
+        logger.debug(f"HttpClient post called with url: {url}, data: {data}, headers: {headers}")
+        return await self._request(
+            HttpRequest(method="CONNECT", url=URL(url), headers=headers)
+        )
+        
     async def websocket(
         self, url: str, subprotocols: Optional[List[str]] = None
     ) -> WebSocket:
@@ -269,9 +279,22 @@ class HttpClient(QuicConnectionProtocol):
         logger.debug(f"HttpClient _request called with request: {request} and header: {head}")
         return await asyncio.shield(waiter)
 
+class RoundTripOpt:
+    def __init__(self, only_cached_conn: bool = False, dont_close_request_stream: bool = False):
+        """
+        Options for the RoundTripOpt method.
+
+        :param only_cached_conn: Controls whether the RoundTripper may create a new QUIC connection.
+                                 If set true and no cached connection is available, RoundTripOpt will return an error.
+        :param dont_close_request_stream: Controls whether the request stream is closed after sending the request.
+                                          If set, context cancellations have no effect after the response headers are received.
+        """
+        self.only_cached_conn = only_cached_conn
+        self.dont_close_request_stream = dont_close_request_stream
 
 
 class RoundTripper:
+    # TODO add locks to this class
     def __init__(self, quic_config: Optional[QuicConfiguration] = None,
                  tls_config: Optional[ssl.SSLContext] = None,
                  dial: Optional[Callable] = None,
@@ -285,15 +308,16 @@ class RoundTripper:
         self.connections: Dict[Tuple[str, int], QuicConnectionProtocol] = {}
         self.last_used = {}
         
-    async def _get_or_create_client(self, host, port):
+    async def _get_or_create_client(self, host: str, port: int) -> QuicConnectionProtocol:
         key = (host, port)
         if key not in self.connections:
+            # Create a new connection
             connection = await connect(
                 host=host,
                 port=port,
                 configuration=self.quic_config,
-                create_protocol=HttpClient,
-                session_ticket_handler=self._save_session_ticket,
+                create_protocol=QuicConnectionProtocol,
+                session_ticket_handler=self.save_session_ticket,
                 local_port=0,  # Replace with desired local port if needed
                 wait_connected=True,
             )
@@ -307,10 +331,48 @@ class RoundTripper:
         current_time = time.time()
         for key, last_used_time in list(self.last_used.items()):
             if current_time - last_used_time > idle_threshold:
-                self.connections[key]._quic.close()
+                self.connections[key].close()
                 del self.connections[key]
                 del self.last_used[key]
-                
+                         
+    # TODO merge with round_trip
+    async def round_trip_opt(self, request: HttpRequest, opt: RoundTripOpt) -> Deque[H3Event]:
+        """
+        Perform an HTTP request with additional options.
+
+        :param request: The HTTP request to perform.
+        :param opt: Options for the request.
+        :return: A deque of H3Event objects representing the response.
+        """
+        # Parse the URL from the request
+        url = request.url.url
+        parsed = urlparse(url)
+        logger.debug(f"RoundTripper round_trip_opt called with request: {request}, opt: {opt}, url: {url}, parsed: {parsed}")
+        if parsed.scheme != "https" and parsed.scheme != "ssh3":
+            raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+        
+        # Extract the hostname and port
+        host = parsed.hostname
+        port = parsed.port or 443
+
+        # Handle the RoundTripOpt options
+        if opt.only_cached_conn and (host, port) not in self.connections:
+            raise ValueError("No cached connection is available")
+
+        # Get or create a QUIC client for the given host and port
+        client = await self._get_or_create_client(host, port)
+        client = cast(HttpClient, client)  # Cast to the appropriate type
+
+        # Use the client to perform an HTTP request
+        if request.method == "GET":
+            return await client.get(url)
+        elif request.method == "POST":
+            return await client.post(url, request.content, request.headers)
+        elif request.method == "CONNECT":
+            return await client.co(url,request.headers)
+        else:
+            raise ValueError("Unsupported HTTP method")
+        
     async def round_trip(self, request: HttpRequest) -> Deque[H3Event]:
         self._cleanup_connections()  # Clean up idle connections
         url = request.url
@@ -328,6 +390,8 @@ class RoundTripper:
             return await client.get(url)
         elif request.method == "POST":
             return await client.post(url, request.content, request.headers)
+        elif request.method == "CONNECT":
+            return await client.co(url,request.headers)
         else:
             raise ValueError("Unsupported HTTP method")
 
