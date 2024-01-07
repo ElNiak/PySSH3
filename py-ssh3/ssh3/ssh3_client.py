@@ -2,10 +2,13 @@ import os
 import base64
 import jwt
 import paramiko
-from http import HTTPStatus
 from typing import Tuple, List
 from ssh3.identity import Identity
 import time
+from util.util import jwt_signing_method_from_crypto_pubkey
+import logging
+
+logger = logging.getLogger(__name__)
 
 class OIDCAuthMethod:
     def __init__(self, do_pkce: bool, config):
@@ -27,18 +30,46 @@ class PasswordAuthMethod:
 
 class PrivkeyFileAuthMethod:
     def __init__(self, filename: str):
-        self.filename = filename
+        self.filename : str = filename
 
     def filename(self) -> str:
         return self.filename
 
+    def into_identity(self, password:str) -> 'Identity':
+        return
+        if self.filename.startswith("~/"):
+            dirname = os.path.expanduser("~")
+            self.filename = os.path.join(dirname, self.filename[2:])
+        with open(self.filename, "rb") as pub_key:
+            # pub_key = f.read()
+            try:
+                if password is None:
+                    signer = paramiko.RSAKey.from_private_key(pub_key)
+                else:
+                    signer = paramiko.RSAKey.from_private_key(pub_key, password)
+            except paramiko.SSHException as e: 
+                logger.error(f"Failed to load private key file {self.filename}: {e}")
+                exit(0)
+        try:
+            crypto_signer = paramiko.AgentKey(signer)
+        except paramiko.SSHException as e:
+            logger.error(f"crypto_signer - Failed to load private key file {self.filename}: {e}")
+            exit(0)
+            
+        signing_method, e = jwt_signing_method_from_crypto_pubkey(crypto_signer)
+        if e:
+            logger.error(f"Failed to load private key file {self.filename}: {e}")
+            exit(0)
+        return PrivkeyFileIdentity(self.filename, crypto_signer, signing_method)
+        
+        
     def into_identity_without_passphrase(self) -> 'Identity':
         # Implement logic to read the private key file
-        pass
+        return self.into_identity_with_passphrase(None)
 
     def into_identity_with_passphrase(self, passphrase: str) -> 'Identity':
         # Implement logic to read the private key file with passphrase
-        pass
+        return self.into_identity(passphrase)
 
 class AgentAuthMethod:
     def __init__(self, pubkey):
@@ -78,6 +109,25 @@ class PasswordBasedIdentity(Identity):
     def __str__(self):
         return "password-identity"
 
+class PrivkeyFileIdentity(Identity):
+    def __init__(self, private_key, algorithm):
+        self.private_key = private_key
+        self.algorithm = algorithm
+
+    def set_authorization_header(self, req, username: str, conversation):
+        # Implement logic to use SSH agent for signing
+        # and setting the Authorization header
+        try:
+            bearer_token = build_jwt_bearer_token(self.algorithm, self.private_key, username, conversation)
+            req.headers['uthorization'] = f'Bearer {bearer_token}'
+        except Exception as e:
+            raise e
+
+    def auth_hint(self):
+        return "pubkey"
+
+    def __str__(self):
+        return f"pubkey-identity: ALG={self.algorithm}"
 
 class RawBearerTokenIdentity(Identity):
     def __init__(self, bearer_token: str):

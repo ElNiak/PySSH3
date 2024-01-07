@@ -60,6 +60,7 @@ def configure_logger(log_level: str) -> None:
         logging.log_level = logging.ERROR
     else:
         logging.log_level = logging.WARN
+    logging.basicConfig(level=logging.log_level,format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 class AcceptQueue:
@@ -219,19 +220,22 @@ def cert_has_ip_sans(cert_pem):
 
 
 def generate_key() -> Tuple[Ed25519PublicKey, Ed25519PrivateKey, Optional[Exception]]:
-    log.debug("generate_key")
+    log.debug("generate_key()")
     try:
         private_key = Ed25519PrivateKey.generate()
         signature = private_key.sign(b"my authenticated message") # TODO
         public_key  = private_key.public_key()
-        # public_key.verify(signature, b"my authenticated message")
+        public_key.verify(signature, b"my authenticated message")
+        log.debug(f"public_key={public_key}")
+        log.debug(f"private_key={private_key}")
+        log.debug(f"signature={signature}")
         return public_key, private_key, None
     except Exception as e:
         log.error(f"could not generate key: {e}")
         return None, None, e
 
-
-def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[Exception]]:
+# TODO cant use SHA256 for Ed25519
+def generate_cert(priv: Ed25519PrivateKey, pub:Ed25519PublicKey) -> Tuple[x509.Certificate, Optional[Exception]]:
     log.info(f"generate_cert: priv={priv}")
     try:
         subject = issuer = x509.Name([
@@ -239,7 +243,7 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
             x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
             x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SSH3Organization"),
-            x509.NameAttribute(NameOID.COMMON_NAME, "elniak.com"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "elniak.selfsigned.ssh3"), # TODO maybe change for interop
 
         ])
         cert = x509.CertificateBuilder(
@@ -248,7 +252,7 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
                 ).issuer_name(
                     issuer
                 ).public_key(
-                    priv.public_key()
+                    pub
                 ).serial_number(
                     x509.random_serial_number()
                 ).not_valid_before(
@@ -257,7 +261,7 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
                     # Our certificate will be valid for 10 days
                     datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10)
                 ).add_extension(
-                    x509.SubjectAlternativeName([x509.DNSName("*"), x509.DNSName("selfsigned.ssh3")]),
+                    x509.SubjectAlternativeName([x509.DNSName("*"), x509.DNSName("elniak.selfsigned.ssh3")]),
                     critical=False,
                     # Sign our certificate with our private key
                 ).add_extension(
@@ -271,8 +275,8 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
                 ).add_extension(
                     x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), 
                     critical=True,
-                )
-        
+                ).sign(priv, hashes.SHA256(), default_backend())
+        log.debug(f"cert={cert}")
         return cert, None
     except Exception as e:
         log.error(f"could not generate cert: {e}")
@@ -281,7 +285,7 @@ def generate_cert(priv: Ed25519PrivateKey) -> Tuple[x509.Certificate, Optional[E
 def dump_cert_and_key_to_files(cert: x509.Certificate, priv: Ed25519PrivateKey, cert_file: str, key_file: str) -> Optional[Exception]:
     log.info(f"dump_cert_to_file: cert_file={cert_file}, key_file={key_file}")
     try:
-        pem = cert.sign(priv, None).public_bytes(encoding=serialization.Encoding.PEM)
+        pem = cert.public_bytes(encoding=serialization.Encoding.PEM)
         with open(cert_file, "wb") as f:
             f.write(pem)
     except Exception as e:

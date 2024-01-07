@@ -24,6 +24,7 @@ class SSH3Server:
         self.conversations = {}  # Map of StreamCreator to ConversationManager
         self.conversation_handler = conversation_handler
         self.lock = asyncio.Lock()
+        self.new_conv = None
         log.debug("SSH3Server initialized")
         #self.h3_server._stream_handler = self.stream_hijacker
         
@@ -102,12 +103,13 @@ class SSH3Server:
         async with self.lock:
             self.conversations.pop(stream_creator, None)
 
-    async def handle_datagrams(self, qconn: QuicConnectionProtocol, new_conv):
-        while True:
+    async def handle_datagrams(self, event: H3Event):
+        log.debug(f"SSH3 server received datagram event: {event}")
+        if isinstance(event, DatagramFrameReceived):
             try:
                 # Receive a datagram from the QUIC connection
-                dgram = qconn.datagram_received()
-
+                # dgram = qconn.datagram_received()
+                dgram = event.data
                 # Process the datagram
                 # Assuming quic_util.read_var_int and util.bytes_read_closer are defined to parse the conversation ID
                 buf = util.BytesReadCloser(dgram)
@@ -116,21 +118,21 @@ class SSH3Server:
                     log.error(f"Could not read conv id from datagram: {err}")
                     return
 
-                if conv_id == new_conv.control_stream.stream_id:
+                if conv_id == self.new_conv.control_stream.stream_id:
                     # Assuming newConv has an AddDatagram method
                     try:
-                        await new_conv.add_datagram(dgram[len(dgram)-buf.remaining():])
+                        await self.new_conv.add_datagram(dgram[len(dgram)-buf.remaining():])
                     except util.ChannelNotFound as e:
                         log.warning(f"Could not find channel {e.channel_id}, queuing datagram in the meantime")
                     except Exception as e:
-                        log.error(f"Could not add datagram to conv id {new_conv.control_stream.stream_id}: {e}")
+                        log.error(f"Could not add datagram to conv id {self.new_conv.control_stream.stream_id}: {e}")
                         return
                 else:
                     log.error(f"Discarding datagram with invalid conv id {conv_id}")
 
             except asyncio.CancelledError:
                 # Handling cancellation of the datagram listener
-                break
+                return
             except Exception as e:
                 if not isinstance(e, (asyncio.CancelledError, ConnectionError)):
                     log.error(f"Could not receive message from connection: {e}")
@@ -138,8 +140,9 @@ class SSH3Server:
     
     async def manage_conversation(self,server, authenticated_username, new_conv, conversations_manager, stream_creator):
         try:
+            log.debug(f"Managing conversation: {new_conv.conversation_id}, user {authenticated_username} and stream creator {stream_creator}")
             # Call the conversation handler
-            await server.conversation_handler(authenticated_username, new_conv)
+            await self.conversation_handler(authenticated_username, new_conv)
 
         except asyncio.CancelledError:
             # Handle cancellation of the conversation handler
@@ -179,12 +182,15 @@ class SSH3Server:
                 hijacker = prot.hijacker #self.h3_server.hijacker
                 stream_creator = hijacker.stream_creator()
                 qcon = hijacker.protocol
-  
+                self.new_conv = new_conv
                 conversations_manager = await self.get_or_create_conversations_manager(stream_creator)
                 await conversations_manager.add_conversation(new_conv)
 
                 # Handling datagrams and conversation
-                asyncio.create_task(self.handle_datagrams(qconn=qcon,new_conv=new_conv))
+                # asyncio.create_task(self.handle_datagrams(qconn=qcon,new_conv=new_conv))
+                
+                self.h3_server.quic_event_received = self.handle_datagrams
+                
                 asyncio.create_task(self.manage_conversation(server=self, 
                                                              authenticated_username=authenticated_username, 
                                                              new_conv=new_conv, 

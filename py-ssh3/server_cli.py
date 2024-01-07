@@ -17,7 +17,6 @@ import sys
 import util.waitgroup as sync
 from http3.http3_server import *
 from aioquic.quic.configuration import QuicConfiguration
-from sanic import Sanic
 from ssh3.ssh3_server import SSH3Server
 from ssh3.conversation import Conversation
 from ssh3.channel import *
@@ -25,10 +24,11 @@ from util.linux_util.linux_user import User, get_user
 from linux_server.auth import *
 import util.globals as glob
 from http3.http3_server import *
-from starlette.applications import Router
-from starlette.routing import Mount, Route, WebSocketRoute
-from starlette.responses import PlainTextResponse, Response
 
+from starlette.applications import Router
+from starlette.applications import Starlette
+from starlette.types import Receive, Scope, Send
+from starlette.routing import Route
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ signals = {
     "SIGXFSZ": signal.SIGXFSZ
 }
 
+    
 class ChannelType:
     LARVAL = 0
     OPEN = 1
@@ -311,42 +312,35 @@ def file_exists(path):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--app",
-        type=str,
-        nargs="?",
-        default="agsi_ssh3:app",
-        help="the ASGI application as <module>:<attribute>",
-    )
     parser.add_argument("--bind", default="[::]:443", help="the address:port pair to listen to, e.g. 0.0.0.0:443")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose mode, if set")
     parser.add_argument("--enablePasswordLogin", action="store_true", help="if set, enable password authentication (disabled by default)")
     parser.add_argument("--urlPath", default="/ssh3-term", help="the secret URL path on which the ssh3 server listens")
     parser.add_argument("--generateSelfSignedCert", action="store_true", help="if set, generates a self-self-signed cerificate and key that will be stored at the paths indicated by the -cert and -key args (they must not already exist)")
     parser.add_argument("--certPath", default="./cert.pem", help="the filename of the server certificate (or fullchain)")
-    parser.add_argument("--keyPath", default="./priv.key", help="the filename of the certificate private key")
-    parser.add_argument(
-        "-l",
-        "--secrets-log",
-        type=str,
-        help="log secrets to a file, for use with Wireshark",
-    )
+    parser.add_argument("--keyPath",  default="./priv.pem", help="the filename of the certificate private key")
+    parser.add_argument("-l","--secrets-log", type=str, help="log secrets to a file, for use with Wireshark")
     args = parser.parse_args()
     
-    # import ASGI application
-    async def url_path_app(request):
-        """
-        HTTP echo endpoint.
-        """
-        log.info(f"Got request url_path_app : method: {request.method}, URL: {request.url.path}")
-        content = await request.body()
-        media_type = request.headers.get("content-type")
-        return Response(content, media_type=media_type)
-    
-    module_str, attr_str = args.app.split(":", maxsplit=1)
-    module = importlib.import_module(module_str)
-    router = getattr(module, "starlette")
-    glob.APPLICATION = getattr(module, attr_str)
+    router = Starlette(
+        debug=True,
+        routes=[
+             Route(path=args.urlPath, 
+                   endpoint=handle_auths, 
+                   methods=["CONNECT"])
+                ]
+    )
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        log.info(f"Received scope: {scope}")
+        log.info(f"Received receive: {receive}")
+        log.info(f"Received send: {send}")
+        log.info(f"Nb Router: {len(router.router.routes)}")  
+        for route in router.router.routes:
+            log.info(f"Route: {route.path}")
+        await router(scope, receive, send)
+
+    glob.APPLICATION = app
     
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
@@ -380,6 +374,7 @@ async def main():
             log.error("If you have no certificate and want a security comparable to traditional SSH host keys, you can generate a self-signed certificate using the -generate-selfsigned-cert arg or using the following script:")
             log.error("https://github.com/ElNiak/py-ssh3/blob/main/generate_openssl_selfsigned_certificate.sh")
             sys.exit(-1)
+        log.info(f"Using certificate \"{args.certPath}\" and private key \"{args.keyPath}\"")
     else:
         if certPathExists:
             log.error(f"asked for generating a certificate but the \"{args.certPath}\" file already exists")
@@ -392,7 +387,7 @@ async def main():
         if err != None:
             log.error(f"could not generate private key: {err}")
             sys.exit(-1)
-        cert, err = util.generate_cert(privkey)
+        cert, err = util.generate_cert(privkey, pubkey)
         if err != None:
             log.error(f"could not generate certificate: {err}")
             sys.exit(-1)
@@ -414,7 +409,7 @@ async def main():
     
     defaults = QuicConfiguration(is_client=False)
     configuration = QuicConfiguration(
-        alpn_protocols=H3_ALPN + H0_ALPN + ["siduck"],
+        alpn_protocols=H3_ALPN,
         is_client=False,
         max_datagram_frame_size=65536,
         max_datagram_size=defaults.max_datagram_size,
@@ -433,11 +428,12 @@ async def main():
     log.info(f"Starting server on {args.bind}")
 
         
-    def handle_conv(authenticatedUsername: str, conv: Conversation):
+    async def handle_conv(authenticatedUsername: str, conv: Conversation):
         log.info(f"Handling authentification for {authenticatedUsername}")
         authUser = get_user(authenticatedUsername)
         
-        channel, err = conv.accept_channel()
+        log.info(f"Handling conversation {conv}")
+        channel, err = await conv.accept_channel()
         if err != None:
             log.error(f"could not accept channel: {err}")
             return
@@ -498,6 +494,10 @@ async def main():
         
         handle_session_channel()   
     
+    log.info(f"Nb Router: {len(router.router.routes)}")  
+    for route in router.router.routes:
+        log.info(f"Route: {route.path}")
+    
     # authenticated_username, new_conv, request_handler
     # asyncio.create_task(ssh3Handler(qconn, new_conv, conversations_manager))
     session_ticket_store = SessionTicketStore()
@@ -511,17 +511,16 @@ async def main():
         session_ticket_handler=glob.SESSION_TICKET_HANDLER,
     )
    
-
-    ssh3Server  = SSH3Server(30000,quic_server._protocols, 10, conversation_handler=handle_conv)
+    ssh3Server  = SSH3Server(
+        30000,quic_server, 
+        10, 
+        conversation_handler=handle_conv)
     ssh3Handler = ssh3Server.get_http_handler_func()
                     
     glob.ENABLE_PASSWORD_LOGIN = args.enablePasswordLogin
     glob.HANDLER_FUNC          = ssh3Handler
     glob.QUIC_SERVER           = quic_server
-    router.router = Router(
-            [Route(args.urlPath+"", endpoint=handle_auths, methods=["CONNECT"]),], on_startup=None, on_shutdown=None, lifespan=None
-    )
-         
+
     log.info(f"Listening on {args.bind} with URL path {args.urlPath}")
     
     await asyncio.Future()

@@ -86,7 +86,7 @@ def parse_addr_port(addr_port_str:str):
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--keylog", help="Write QUIC TLS keys and master secret in the specified keylog file: only for debugging purpose")
-    parser.add_argument("--privkey", help="private key file")
+    parser.add_argument("--privkey", type=str, help="private key file (e.g ~/.ssh/id_rsa)")
     parser.add_argument("--pubkeyForAgent", help="if set, use an agent key whose public key matches the one in the specified path")
     parser.add_argument("--usePassword", action='store_true', help="if set, do classical password authentication")
     parser.add_argument("--insecure", action='store_true', help="if set, skip server certificate verification")
@@ -98,18 +98,9 @@ async def main():
     parser.add_argument("--forwardUDP", help="if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
     parser.add_argument("--forwardTCP", help="if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
     parser.add_argument("--url", help="URL to connect to")
-    parser.add_argument(
-        "-l",
-        "--secrets-log",
-        type=str,
-        help="log secrets to a file, for use with Wireshark",
-    )
-    parser.add_argument(
-        "-s",
-        "--session-ticket",
-        type=str,
-        help="read and write session ticket from the specified file",
-    )
+    parser.add_argument("-l", "--secrets-log", type=str, help="log secrets to a file, for use with Wireshark")
+    parser.add_argument("-s", "--session-ticket", type=str, help="read and write session ticket from the specified file")
+    parser.add_argument("--cipher-suites",type=str,help=("only advertise the given cipher suites, e.g. `AES_256_GCM_SHA384," "CHACHA20_POLY1305_SHA256`"),)
     args = parser.parse_args()
     
     
@@ -252,6 +243,7 @@ async def main():
     assert parsed_url.scheme in (
         "https",
         "wss",
+        "ssh3"
     ), "Only https:// or wss:// URLs are supported."
     hostname = parsed_url.hostname
     if parsed_url.port is not None:
@@ -283,7 +275,7 @@ async def main():
         secrets_log_file = None
         
     # Setup TLS configuration
-    defaults = QuicConfiguration(is_client=False)
+    defaults = QuicConfiguration(is_client=True)
     configuration = QuicConfiguration(
         alpn_protocols=H3_ALPN,
         is_client=True,
@@ -292,10 +284,15 @@ async def main():
         quic_logger = QuicFileLogger("qlogs_client/"),
         secrets_log_file=secrets_log_file
     )
+    if args.cipher_suites:
+        configuration.cipher_suites = [
+            CipherSuite[s] for s in args.cipher_suites.split(",")
+        ]
     configuration.verify_mode = ssl.CERT_REQUIRED if not args.insecure else ssl.CERT_NONE
     # load SSL certificate and key
     if hostname in known_hosts:
         for cert in known_hosts[hostname]:
+            log.info(f"Adding certificate {cert}")
             configuration.load_verify_locations(cadata=cert.public_bytes(serialization.Encoding.PEM))
 
     if key_log:
@@ -327,439 +324,425 @@ async def main():
     
     conv = None # uninitialized conversation
            
-    # TODO no need to connect in dial since connect() is called in RoundTripper 
-    async def dial_quic_host(hostname, port, quic_config, known_hosts_path):
+    try:
+        # Check if hostname is an IP address and format it appropriately
         try:
-            # Check if hostname is an IP address and format it appropriately
-            try:
-                log.info(f"Checking if {hostname} is an IP address")
-                ip = ipaddress.ip_address(hostname)
-                if ip.version == 6:
-                    hostname = f"[{hostname}]"
-            except ValueError:
-                log.error(f"Not a valid IP address {hostname}")  # Hostname is not an IP address
-                pass
-            log.info(f"Connecting to {hostname}:{port}")
-            # Attempt to establish a QUIC connection
-            async with connect(hostname, port, 
-                               configuration=quic_config, 
-                            #    session_ticket_handler=save_session_ticket,
-                               wait_connected=True,
-                               create_protocol=HttpClient) as client:
-                # Connection established
-                client = cast(HttpClient, client)
-                log.info(f"Connected to {hostname}:{port} with client {client}")
-                # await establish_client_connection(client)
-                return client
-                
-                # coros = [
-                #     perform_http_request(
-                #         client=client,
-                #         url=url,
-                #         data=None,
-                #         include=False,
-                #         output_dir=None,
-                #     )
-                #     for url in [url_from_param]
-                # ]
-                # await asyncio.gather(*coros)
+            log.info(f"Checking if {hostname} is an IP address")
+            ip = ipaddress.ip_address(hostname)
+            if ip.version == 6:
+                hostname = f"[{hostname}]"
+        except ValueError:
+            log.error(f"Not a valid IP address {hostname}")  # Hostname is not an IP address
+            pass
+        log.info(f"Connecting to {hostname}:{port}")
+        # Attempt to establish ONE QUIC connection
+        async with connect(hostname, port, 
+                            configuration=configuration, 
+                            session_ticket_handler=round_tripper.save_session_ticket,
+                            wait_connected=True,
+                            create_protocol=HttpClient) as client:
+            # Connection established
+            client = cast(HttpClient, client)
+            log.info(f"Connected to {hostname}:{port} with client {client}")
+            if client == -1 or client == 0:
+                log.error(f"Could not establish client QUIC connection: {client}")
+                return
+            
+            round_tripper.connections[(hostname, port)] = client
+            
+            tls_state = client._quic.tls.state
+            log.info(f"TLS state is {tls_state}")
+            
+            log.info(f"Creating client conversation with {client}")
+            conv = await new_client_conversation(30000,10, tls_state)
+            log.info(f"Conversation is {conv}")
+            
+            # HTTP request over QUIC
+            # perform request 
+            new_url = URL(url_from_param.replace("https","ssh3")) # TODO -> should replace Proto
+            # new_url = URL(url_from_param)
+            log.info(f"New URL is {new_url}")
+            req = HttpRequest(method="CONNECT", url=new_url)
+            req.headers[':protocol'] = "ssh3" # TODO -> should replace Proto
+            log.info(f"Request is {req}")
+            
+            # Handle authentication methods
+            auth_methods = []
+            priv_key_file = args.privkey
+            if not args.privkey:
+                priv_key_file = '~/.ssh/id_rsa'
+            pubkey_for_agent = '' # TODO
+            log.info(f"Private key file is {priv_key_file}")
+            if not args.useOidc:
+                # Private key and agent authentication
+                if priv_key_file:
+                    # Add private key auth method
+                    auth_methods.append(PrivkeyFileAuthMethod(priv_key_file))  # Implement based on your application logic
 
-                # log.info(f"Push HTTP event{client}")
-                # process_http_pushes(client=client,include=False,output_dir=None)
-                # client._quic.close(error_code=ErrorCode.H3_NO_ERROR)
+                if pubkey_for_agent:
+                    agent = paramiko.Agent()
+                    agent_keys = agent.get_keys()
+                    # Compare and add agent keys to auth methods
+                    # TODO
+                    pass  # Implement based on your application logic
 
-        except ssl.SSLError as e:
-            logging.error("TLS error: %s", e)
-            if hostname in known_hosts:
-                # Server certificate cannot be verified
-                logging.error("The server certificate cannot be verified.")
-                return -1
+                if args.usePassword:
+                    # Add password auth method
+                    auth_methods.append(PasswordAuthMethod())  # Implement based on your application logic
             else:
-                # Handle bad certificates like OpenSSH
-                quic_config.verify_mode = ssl.CERT_NONE
-                quic_config.check_hostname = False
-                peer_cert = None  # Placeholder for peer certificate
+                # OIDC authentication
+                # TODO
+                issuer_url = args.useOidc
+                if issuer_url:
+                    # Add OIDC auth method based on issuer URL
+                    for issuer_config in oidc_config:
+                        if issuer_url == issuer_config.issuer_url:
+                            auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
+                        
+                else:
+                    log.error("OIDC was asked explicitly but did not find suitable issuer URL")
+                    exit(-1)
 
-                async with connect(hostname, port, 
-                                   create_protocol=HttpClient,
-                                   configuration=quic_config) as client:
-                    peer_cert = client.connection.tls._peer_certificate
+            auth_methods.append(config_auth_methods)
+            
+            if oidc_config:
+                for issuer_config in oidc_config:
+                    if issuer_url == issuer_config.issuer_url:
+                        auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
+            
+            log.debug(f"Try the following auth methods: {auth_methods}")
+            
+            identity = None
+            for method in auth_methods:
+                if isinstance(method, PasswordAuthMethod):
+                    password = input(f"Password: ")
+                    identity = method.into_identity(password)
+                elif isinstance(method, PrivkeyFileAuthMethod):
+                    try:
+                        identity = method.into_identity_without_passphrase()
+                    except Exception as e:  # Replace with specific passphrase missing exception
+                        # Handle passphrase protected key
+                        passphrase = input(f"Passphrase for private key stored in {method.filename()}: ")
+                        identity = method.into_identity_passphrase(passphrase)
+                        if identity is None:
+                            log.error("Could not load private key with passphrase")
+                elif isinstance(method, AgentAuthMethod):
+                    # Assuming an SSH agent is already connected
+                    # identity = method.into_identity(agent_client)
+                    pass # TODO
+                elif isinstance(method, OIDCAuthMethod): 
+                    # Assuming an OIDC connection method
+                    # TODO
+                    # token, err = oicd_connect(method.oidc_config(), method.oidc_config().issuer_url, method.do_pkce)
+                    token, err = None, None
+                    if err:
+                        log.error(f"Could not get token: {err}")
+                    else:
+                        identity = method.into_identity(token)
 
-                # Check if the certificate is self-signed
-                # TODO 
-                # if not is_self_signed(peer_cert):
-                #     log.error("The peer provided an unknown, insecure certificate.")
-                #     return -1
+                if identity:
+                    break  # Exit the loop once an identity is found
 
-                # Prompt user to accept the certificate
-                log.info("Received an unknown self-signed certificate from the server.")
-                answer = input("Do you want to add this certificate to ~/.ssh3/known_hosts (yes/no)? ").strip()
-                if answer.lower() != "yes":
-                    log.info("Connection aborted.")
-                    return 0
+            if identity is None:
+                log.error("No suitable identity found")
+                # Handle the error or exit
+                exit(-1)
+            
+            log.debug(f"Try the following Identity: {identity}")
 
-                # Append certificate to known hosts
-                if not append_known_host(known_hosts_path, hostname, peer_cert):
-                    log.error("Could not append known host.")
-                    return -1
-
-                log.info("Successfully added the certificate. Please rerun the command.")
-                return 0
-
-        except Exception as e:
-            log.error("Could not establish client QUIC connection: %s", e)
-            return -1
-   
-    log.info(f"Starting client to {url_from_param}")
-    client = await dial_quic_host(
-        hostname=hostname,
-        port=port,
-        quic_config=configuration,
-        known_hosts_path=known_hosts_path
-    )
-    
-    if client == -1 or client == 0:
-        log.error(f"Could not establish client QUIC connection: {client}")
-        return
-    
-    # // TODO: could be nice ?? dirty hack: ensure only one QUIC connection is used
-    def dial(addr:str, tls_config, quic_config):
-        return client, None 
-    round_tripper.dial = dial
-    
-    tls_state = client._quic.tls.state
-    log.info(f"TLS state is {tls_state}")
-    
-    log.info(f"Creating client conversation with {client}")
-    conv = await new_client_conversation(30000,10, tls_state)
-    log.info(f"Conversation is {conv}")
-    
-    # HTTP request over QUIC
-    # perform request 
-    new_url = URL(url_from_param.replace("https","ssh3")) # TODO -> should replace Proto
-    # new_url = URL(url_from_param)
-    log.info(f"New URL is {new_url}")
-    req = HttpRequest(method="CONNECT", url=new_url)
-    # req.Proto = "ssh3" # TODO
-    req.headers[':protocol'] = "ssh3" # TODO -> should replace Proto
-    log.info(f"Request is {req}")
-    
-    # Handle authentication methods
-    auth_methods = []
-    priv_key_file = args.privkey
-    if not args.privkey:
-        priv_key_file = '~/.ssh/id_rsa'
-    pubkey_for_agent = '' # TODO
-    
-    if not args.useOidc:
-        # Private key and agent authentication
-        if priv_key_file:
-            # Add private key auth method
-            auth_methods.append(PrivkeyFileAuthMethod(priv_key_file))  # Implement based on your application logic
-
-        if pubkey_for_agent:
-            agent = paramiko.Agent()
-            agent_keys = agent.get_keys()
-            # Compare and add agent keys to auth methods
-            # TODO
-            pass  # Implement based on your application logic
-
-        if args.usePassword:
-            # Add password auth method
-            auth_methods.append(PasswordAuthMethod())  # Implement based on your application logic
-    else:
-        # OIDC authentication
-        # TODO
-        issuer_url = args.useOidc
-        if issuer_url:
-            # Add OIDC auth method based on issuer URL
-            for issuer_config in oidc_config:
-                if issuer_url == issuer_config.issuer_url:
-                    auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
-                
-        else:
-            log.error("OIDC was asked explicitly but did not find suitable issuer URL")
-            exit(-1)
-
-    auth_methods.append(config_auth_methods)
-    
-    if oidc_config:
-        for issuer_config in oidc_config:
-            if issuer_url == issuer_config.issuer_url:
-                auth_methods.append(OIDCAuthMethod(args.doPkce,issuer_config))
-    
-    log.debug(f"Try the following auth methods: {auth_methods}")
-    
-    identity = None
-    for method in auth_methods:
-        if isinstance(method, PasswordAuthMethod):
-            password = input(f"Password: ")
-            identity = method.into_identity(password)
-        elif isinstance(method, PrivkeyFileAuthMethod):
             try:
-                identity = method.into_identity_without_passphrase()
-            except Exception as e:  # Replace with specific passphrase missing exception
-                # Handle passphrase protected key
-                passphrase = input(f"Passphrase for private key stored in {method.filename()}: ")
-                identity = method.into_identity_passphrase(passphrase)
-                if identity is None:
-                    log.error("Could not load private key with passphrase")
-        elif isinstance(method, AgentAuthMethod):
-            # Assuming an SSH agent is already connected
-            # identity = method.into_identity(agent_client)
-            pass # TODO
-        elif isinstance(method, OIDCAuthMethod): 
-            # Assuming an OIDC connection method
-            # TODO
-            # token, err = oicd_connect(method.oidc_config(), method.oidc_config().issuer_url, method.do_pkce)
-            token, err = None, None
-            if err:
-                log.error(f"Could not get token: {err}")
-            else:
-                identity = method.into_identity(token)
+                identity.set_authorization_header(req, username, conv)
+            except Exception as e:
+                log.error(f"Could not set authorization header in HTTP request: {e}")
+                exit(-1)
 
-        if identity:
-            break  # Exit the loop once an identity is found
+            log.debug(f"Send CONNECT request to the server {req}")
 
-    if identity is None:
-        log.error("No suitable identity found")
-        # Handle the error or exit
-        exit(-1)
-    
-    log.debug(f"Try the following Identity: {identity}")
+            try:
+                ret, err = await conv.establish_client_conversation(req, round_tripper)
+                if ret ==  "Unauthorized":  # Replace with your specific error class
+                    log.error("Access denied from the server: unauthorized")
+                    exit(-1)
+            except Exception as e:
+                log.error(f"Could not establish client conversation: {e}")
+                exit(-1)
+            
+            try:
+                channel = conv.open_channel("session", 30000, 0)
+            except Exception as e:
+                log.error(f"Could not open channel: {e}")
+                exit(-1)
 
-    try:
-        identity.set_authorization_header(req, username, conv)
-    except Exception as e:
-        log.error(f"Could not set authorization header in HTTP request: {e}")
-        exit(-1)
+            log.debug("Opened new session channel")
 
-    log.debug(f"Send CONNECT request to the server {req}")
-
-    try:
-        ret, err = await conv.establish_client_conversation(req, round_tripper)
-        if ret ==  "Unauthorized":  # Replace with your specific error class
-            log.error("Access denied from the server: unauthorized")
-            exit(-1)
-    except Exception as e:
-        log.error(f"Could not open channel: {e}")
-        exit(-1)
-    
-    try:
-        channel = conv.open_channel("session", 30000, 0)
-    except Exception as e:
-        log.error(f"Could not open channel: {e}")
-        exit(-1)
-
-    log.debug("Opened new session channel")
-
-    if args.forwardAgent:
-        # TODO
-        try:
-            await channel.write_data(b"forward-agent")
-        except Exception as e:
-            log.error(f"Could not forward agent: {e}")
-            return -1
-        
-        async def accept_and_forward_channels():
-            while True:
+            if args.forwardAgent:
+                # TODO
                 try:
-                    forward_channel = await conv.accept_channel()
-                    if forward_channel.channel_type != "agent-connection":
-                        log.error(f"Unexpected server-initiated channel: {forward_channel.channel_type}")
-                        return
-
-                    log.debug("New agent connection, forwarding")
-                    asyncio.create_task(forward_agent(forward_channel))
-
-                except asyncio.CancelledError:
-                    # Context was cancelled, exit the loop
-                    return
+                    await channel.write_data(b"forward-agent")
                 except Exception as e:
-                    log.error(f"Could not accept forwarding channel: {e}")
-                    # Close the conversation on error
-                    await conv.close()
-                    return
+                    log.error(f"Could not forward agent: {e}")
+                    return -1
+                
+                async def accept_and_forward_channels():
+                    while True:
+                        try:
+                            forward_channel = await conv.accept_channel()
+                            if forward_channel.channel_type != "agent-connection":
+                                log.error(f"Unexpected server-initiated channel: {forward_channel.channel_type}")
+                                return
 
-        asyncio.create_task(accept_and_forward_channels())
-    
-    if len(command) == 0:
-        is_atty = sys.stdin.isatty()
-        if is_atty:
-            window_size = get_winsize_windows()
-            err = channel.send_request(
-                ChannelRequestMessage(
-                    want_reply=True,
-                    channel_request=PtyRequest(
-                        term=os.getenv("TERM"),
-                        char_width=window_size.ncols,
-                        char_height=window_size.nrows,
-                        pixel_width=window_size.pixel_width,
-                        pixel_height=window_size.pixel_height
+                            log.debug("New agent connection, forwarding")
+                            asyncio.create_task(forward_agent(forward_channel))
+
+                        except asyncio.CancelledError:
+                            # Context was cancelled, exit the loop
+                            return
+                        except Exception as e:
+                            log.error(f"Could not accept forwarding channel: {e}")
+                            # Close the conversation on error
+                            await conv.close()
+                            return
+
+                asyncio.create_task(accept_and_forward_channels())
+            
+            if len(command) == 0:
+                is_atty = sys.stdin.isatty()
+                if is_atty:
+                    window_size = get_winsize_windows()
+                    err = channel.send_request(
+                        ChannelRequestMessage(
+                            want_reply=True,
+                            channel_request=PtyRequest(
+                                term=os.getenv("TERM"),
+                                char_width=window_size.ncols,
+                                char_height=window_size.nrows,
+                                pixel_width=window_size.pixel_width,
+                                pixel_height=window_size.pixel_height
+                            )
+                        )
+                    )
+                    if err != None:
+                        log.error(f"Could send pty request {err}")
+                        exit(-1)
+                    log.info("Sent PTY request for sessions")
+                    
+                # Send shell request
+                err = channel.send_request(
+                    ChannelRequestMessage(
+                        want_reply=True,
+                        channel_request=ShellRequest()
                     )
                 )
-            )
+                log.debug("Sent shell request")
+
+                # Make terminal raw if stdin is TTY
+                # TODO
+                # if is_atty:
+                #     old_attr = termios.tcgetattr(sys.stdin.fileno())
+                #     new_attr = termios.tcgetattr(sys.stdin.fileno())
+                #     new_attr[3] = new_attr[3] & ~termios.ICANON & ~termios.ECHO
+                #     termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, new_attr)
+                #     # Restore terminal settings at the end
+                #     def restore_terminal():
+                #         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attr)
+                #     atexit.register(restore_terminal)
+            else:
+                # Send exec request
+                exec_command = " ".join(command)
+                err =  channel.send_request(ChannelRequestMessage(
+                        want_reply=True,
+                        channel_request=ExecRequest(
+                            command=exec_command
+                        )
+                    ))
+                log.debug(f"Sent exec request for command \"{exec_command}\"")
+            
             if err != None:
-                log.error(f"Could send pty request {err}")
-                exit(-1)
-            log.info("Sent PTY request for sessions")
-            
-        # Send shell request
-        err = channel.send_request(
-            ChannelRequestMessage(
-                want_reply=True,
-                channel_request=ShellRequest()
-            )
-        )
-        log.debug("Sent shell request")
-
-        # Make terminal raw if stdin is TTY
-        # TODO
-        # if is_atty:
-        #     old_attr = termios.tcgetattr(sys.stdin.fileno())
-        #     new_attr = termios.tcgetattr(sys.stdin.fileno())
-        #     new_attr[3] = new_attr[3] & ~termios.ICANON & ~termios.ECHO
-        #     termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, new_attr)
-        #     # Restore terminal settings at the end
-        #     def restore_terminal():
-        #         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attr)
-        #     atexit.register(restore_terminal)
-    else:
-        # Send exec request
-        exec_command = " ".join(command)
-        err =  channel.send_request(ChannelRequestMessage(
-                want_reply=True,
-                channel_request=ExecRequest(
-                    command=exec_command
-                )
-            ))
-        log.debug(f"Sent exec request for command \"{exec_command}\"")
-    
-    if err != None:
-        log.error("Could not sebd shell request")
-        
-    async def transfer_stdin_to_channel(channel):
-        try:
-            while True:
-                buf = await asyncio.to_thread(sys.stdin.buffer.read, channel.max_packet_size())
-                if buf:
-                    await asyncio.to_thread(channel.write_data, buf)
-        except Exception as e:
-            log.info(f"Error: {e}", file=sys.stderr)
-            return
-        
-    await transfer_stdin_to_channel(channel)
-
-    async def udp_forwarding(local_udp_addr, remote_udp_addr, conv):
-        log.debug(f"Start forwarding from {local_udp_addr} to {remote_udp_addr}")
-
-        # Create a UDP socket
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.bind(local_udp_addr)
-            forwardings = {}
-            async def handle_remote_dgram(channel, addr):
-                while True:
-                    try:
-                        # Assuming `channel.receive_datagram` is an async method to receive datagrams
-                        dgram = await channel.receive_datagram()
-                        sock.sendto(dgram, addr)
-                    except Exception as e:
-                        log.error(f"Could not write datagram on socket: {e}")
-                        return
-            while True:
+                log.error("Could not sebd shell request")
+                
+            async def transfer_stdin_to_channel(channel):
                 try:
-                    dgram, addr = await asyncio.get_event_loop().sock_recvfrom(sock, 1500)
-                    if addr not in forwardings:
-                        # Open a new UDP forwarding channel
-                        # Assuming `conv.open_udp_forwarding_channel` is an async method to open a channel
-                        channel = await conv.open_udp_forwarding_channel(local_udp_addr, remote_udp_addr)
-                        forwardings[addr] = channel
-                        # Start a new task to handle incoming datagrams from the remote side
-                        asyncio.create_task(handle_remote_dgram(channel, addr))
-                    # Send the datagram to the remote side
-                    await channel.send_datagram(dgram)
+                    while True:
+                        buf = await asyncio.to_thread(sys.stdin.buffer.read, channel.max_packet_size())
+                        if buf:
+                            await asyncio.to_thread(channel.write_data, buf)
                 except Exception as e:
-                    log.error(f"Could not handle UDP socket: {e}")
+                    log.info(f"Error: {e}", file=sys.stderr)
                     return
-    
-    async def forward_tcp_in_background(channel, client_conn):
-        """
-        Handles forwarding of TCP data between client and remote server through an SSH channel.
-        """
-        try:
-            data = await asyncio.get_event_loop().sock_recv(client_conn, 4096)
-            if not data:
-               await forward_tcp_in_background(channel, client_conn) 
-            # Assuming 'channel.send_data' is an async method to send data through the channel
-            await channel.send_data(data)
+                
+            await transfer_stdin_to_channel(channel)
+
+            async def udp_forwarding(local_udp_addr, remote_udp_addr, conv):
+                log.debug(f"Start forwarding from {local_udp_addr} to {remote_udp_addr}")
+
+                # Create a UDP socket
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.bind(local_udp_addr)
+                    forwardings = {}
+                    async def handle_remote_dgram(channel, addr):
+                        while True:
+                            try:
+                                # Assuming `channel.receive_datagram` is an async method to receive datagrams
+                                dgram = await channel.receive_datagram()
+                                sock.sendto(dgram, addr)
+                            except Exception as e:
+                                log.error(f"Could not write datagram on socket: {e}")
+                                return
+                    while True:
+                        try:
+                            dgram, addr = await asyncio.get_event_loop().sock_recvfrom(sock, 1500)
+                            if addr not in forwardings:
+                                # Open a new UDP forwarding channel
+                                # Assuming `conv.open_udp_forwarding_channel` is an async method to open a channel
+                                channel = await conv.open_udp_forwarding_channel(local_udp_addr, remote_udp_addr)
+                                forwardings[addr] = channel
+                                # Start a new task to handle incoming datagrams from the remote side
+                                asyncio.create_task(handle_remote_dgram(channel, addr))
+                            # Send the datagram to the remote side
+                            await channel.send_datagram(dgram)
+                        except Exception as e:
+                            log.error(f"Could not handle UDP socket: {e}")
+                            return
             
-            # Assuming 'channel.receive_data' is an async method to receive data from the channel
-            remote_data = await channel.receive_data()
-            if remote_data:
-                await asyncio.get_event_loop().sock_sendall(client_conn, remote_data)
-        except Exception as e:
-            logging.error(f"Error in TCP forwarding: {e}")
-        finally:
-            client_conn.close()
+            async def forward_tcp_in_background(channel, client_conn):
+                """
+                Handles forwarding of TCP data between client and remote server through an SSH channel.
+                """
+                try:
+                    data = await asyncio.get_event_loop().sock_recv(client_conn, 4096)
+                    if not data:
+                        await forward_tcp_in_background(channel, client_conn) 
+                    # Assuming 'channel.send_data' is an async method to send data through the channel
+                    await channel.send_data(data)
+                    
+                    # Assuming 'channel.receive_data' is an async method to receive data from the channel
+                    remote_data = await channel.receive_data()
+                    if remote_data:
+                        await asyncio.get_event_loop().sock_sendall(client_conn, remote_data)
+                except Exception as e:
+                    logging.error(f"Error in TCP forwarding: {e}")
+                finally:
+                    client_conn.close()
 
-    async def tcp_forwarding(local_tcp_addr, remote_tcp_addr, conv):
-        logging.debug(f"Start forwarding from {local_tcp_addr} to {remote_tcp_addr}")
+            async def tcp_forwarding(local_tcp_addr, remote_tcp_addr, conv):
+                logging.debug(f"Start forwarding from {local_tcp_addr} to {remote_tcp_addr}")
 
-        server = await asyncio.start_server(
-            lambda r, w: handle_client(conv, remote_tcp_addr, r, w), 
-            local_tcp_addr[0], local_tcp_addr[1])
+                server = await asyncio.start_server(
+                    lambda r, w: handle_client(conv, remote_tcp_addr, r, w), 
+                    local_tcp_addr[0], local_tcp_addr[1])
 
-        async def handle_client(conv, remote_tcp_addr, reader, writer):
-            forwarding_channel = await conv.open_tcp_forwarding_channel(remote_tcp_addr)
-            await forward_tcp_in_background(forwarding_channel, (reader, writer))
+                async def handle_client(conv, remote_tcp_addr, reader, writer):
+                    forwarding_channel = await conv.open_tcp_forwarding_channel(remote_tcp_addr)
+                    await forward_tcp_in_background(forwarding_channel, (reader, writer))
 
-        await server.serve_forever()
-    
-    if local_udp_addr != None and remote_udp_addr != None:
-        await udp_forwarding(local_udp_addr=local_udp_addr, remote_udp_addr=remote_udp_addr, conv=conv)
-    
-    if local_tcp_addr != None and remote_tcp_addr != None:
-        await tcp_forwarding(local_tcp_addr=local_tcp_addr, remote_tcp_addr=remote_tcp_addr, conv=conv)
-
-    conv.close()  
-    
-    async def read_channel_messages(channel):
-        try:
-            while True:
-                message = await channel.next_message()  # Assuming 'next_message' is an async method
-                if isinstance(message, ChannelRequestMessage):  
-                    if isinstance(message.channel_request, PtyRequest):  
-                        log.info("Receiving a pty request on the client is not implemented")
-                    elif isinstance(message.channel_request, X11Request):  
-                        log.info("Receiving a x11 request on the client is not implemented")
-                    elif isinstance(message.channel_request, ShellRequest):  
-                        log.info("Receiving a shell request on the client is not implemented")
-                    elif isinstance(message.channel_request, ExecRequest):  
-                        log.info("Receiving a exec request on the client is not implemented")
-                    elif isinstance(message.channel_request, SubsystemRequest):  
-                        log.info("Receiving a subsystem request on the client is not implemented")
-                    elif isinstance(message.channel_request, WindowChangeRequest):  
-                        log.info("Receiving a windowchange request on the client is not implemented")
-                    elif isinstance(message.channel_request, SignalRequest):  
-                        log.info("Receiving a signal request on the client is not implemented")
-                    elif isinstance(message.channel_request, ExitStatusRequest):  
-                        log.info(f"SSH3: Process exited with status: {message.channel_request.exit_status}")
-                        return message.channel_request.exit_status
-                    elif isinstance(message.channel_request, ExitSignalRequest):  
-                        log.info(f"SSH3: Process exited with signal: {message.channel_request.signal_name_without_sig}: {message.channel_request.error_message_utf8}")
-                        return -1
-
-                elif isinstance(message, DataOrExtendedDataMessage):  
-                    if message.data_type == SSHDataType.SSH_EXTENDED_DATA_NONE:  # Replace with the actual constant
-                        log.info(message.data.decode())
-                    elif message.data_type == SSHDataType.SSH_EXTENDED_DATA_STDERR:  # Replace with the actual constant
-                        log.error(message.data.decode())
-
-        except Exception as e:
-            log.info(f"Could not get message: {e}", file=sys.stderr)
-            exit(-1)
+                await server.serve_forever()
             
-    await read_channel_messages(channel)
-    
+            if local_udp_addr != None and remote_udp_addr != None:
+                await udp_forwarding(local_udp_addr=local_udp_addr, remote_udp_addr=remote_udp_addr, conv=conv)
+            
+            if local_tcp_addr != None and remote_tcp_addr != None:
+                await tcp_forwarding(local_tcp_addr=local_tcp_addr, remote_tcp_addr=remote_tcp_addr, conv=conv)
+
+            conv.close()  
+            
+            async def read_channel_messages(channel):
+                try:
+                    while True:
+                        message = await channel.next_message()  # Assuming 'next_message' is an async method
+                        if isinstance(message, ChannelRequestMessage):  
+                            if isinstance(message.channel_request, PtyRequest):  
+                                log.info("Receiving a pty request on the client is not implemented")
+                            elif isinstance(message.channel_request, X11Request):  
+                                log.info("Receiving a x11 request on the client is not implemented")
+                            elif isinstance(message.channel_request, ShellRequest):  
+                                log.info("Receiving a shell request on the client is not implemented")
+                            elif isinstance(message.channel_request, ExecRequest):  
+                                log.info("Receiving a exec request on the client is not implemented")
+                            elif isinstance(message.channel_request, SubsystemRequest):  
+                                log.info("Receiving a subsystem request on the client is not implemented")
+                            elif isinstance(message.channel_request, WindowChangeRequest):  
+                                log.info("Receiving a windowchange request on the client is not implemented")
+                            elif isinstance(message.channel_request, SignalRequest):  
+                                log.info("Receiving a signal request on the client is not implemented")
+                            elif isinstance(message.channel_request, ExitStatusRequest):  
+                                log.info(f"SSH3: Process exited with status: {message.channel_request.exit_status}")
+                                return message.channel_request.exit_status
+                            elif isinstance(message.channel_request, ExitSignalRequest):  
+                                log.info(f"SSH3: Process exited with signal: {message.channel_request.signal_name_without_sig}: {message.channel_request.error_message_utf8}")
+                                return -1
+
+                        elif isinstance(message, DataOrExtendedDataMessage):  
+                            if message.data_type == SSHDataType.SSH_EXTENDED_DATA_NONE:  # Replace with the actual constant
+                                log.info(message.data.decode())
+                            elif message.data_type == SSHDataType.SSH_EXTENDED_DATA_STDERR:  # Replace with the actual constant
+                                log.error(message.data.decode())
+
+                except Exception as e:
+                    log.info(f"Could not get message: {e}", file=sys.stderr)
+                    exit(-1)
+                    
+            await read_channel_messages(channel)
+
+            return client
+        # return await round_tripper._get_or_create_client(host=hostname, port=port)
+            
+            # coros = [
+            #     perform_http_request(
+            #         client=client,
+            #         url=url,
+            #         data=None,
+            #         include=False,
+            #         output_dir=None,
+            #     )
+            #     for url in [url_from_param]
+            # ]
+            # await asyncio.gather(*coros)
+
+            # log.info(f"Push HTTP event{client}")
+            # process_http_pushes(client=client,include=False,output_dir=None)
+            # client._quic.close(error_code=ErrorCode.H3_NO_ERROR)
+
+    except ssl.SSLError as e:
+        logging.error("TLS error: %s", e)
+        if hostname in known_hosts:
+            # Server certificate cannot be verified
+            logging.error("The server certificate cannot be verified.")
+            return -1
+        else:
+            # Handle bad certificates like OpenSSH
+            configuration.verify_mode = ssl.CERT_NONE
+            configuration.check_hostname = False
+            peer_cert = None  # Placeholder for peer certificate
+
+            async with connect(hostname, port, 
+                                create_protocol=HttpClient,
+                                configuration=configuration) as client:
+                peer_cert = client.connection.tls._peer_certificate
+
+            # Check if the certificate is self-signed
+            # TODO 
+            # if not is_self_signed(peer_cert):
+            #     log.error("The peer provided an unknown, insecure certificate.")
+            #     return -1
+
+            # Prompt user to accept the certificate
+            log.info("Received an unknown self-signed certificate from the server.")
+            answer = input("Do you want to add this certificate to ~/.ssh3/known_hosts (yes/no)? ").strip()
+            if answer.lower() != "yes":
+                log.info("Connection aborted.")
+                return 0
+
+            # Append certificate to known hosts
+            if not append_known_host(known_hosts_path, hostname, peer_cert):
+                log.error("Could not append known host.")
+                return -1
+
+            log.info("Successfully added the certificate. Please rerun the command.")
+            return 0
+
+    except Exception as e:
+        log.error("Could not establish client QUIC connection: %s", e)
+        return -1
+        
 if __name__ == "__main__":
     asyncio.run(main())

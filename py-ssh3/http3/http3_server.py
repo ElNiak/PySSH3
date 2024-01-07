@@ -82,6 +82,7 @@ class HttpRequestHandler:
             )
 
     async def run_asgi(self, app: AsgiApplication) -> None:
+        log.debug("Running ASGI app with parameters: %s", self.scope)
         await app(self.scope, self.receive, self.send)
 
     async def receive(self) -> Dict:
@@ -435,6 +436,7 @@ class HttpServerProtocol(QuicConnectionProtocol):
                     "stream_ended":event.stream_ended,
                     "stream_id":event.stream_id,
                 }
+                log.debug("HTTP request 2: %s %s %s %s", method, path, protocol, scope)
                 handler = HttpRequestHandler(
                     authority=authority,
                     connection=self._http,

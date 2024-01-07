@@ -176,7 +176,7 @@ class HttpClient(QuicConnectionProtocol):
         """
         Perform a POST request.
         """
-        logger.debug(f"HttpClient post called with url: {url}, data: {data}, headers: {headers}")
+        logger.debug(f"HttpClient connect called with url: {url}, headers: {headers}")
         return await self._request(
             HttpRequest(method="CONNECT", url=URL(url), headers=headers)
         )
@@ -312,16 +312,17 @@ class RoundTripper:
         key = (host, port)
         if key not in self.connections:
             # Create a new connection
-            connection = await connect(
+            async with connect(
                 host=host,
                 port=port,
                 configuration=self.quic_config,
-                create_protocol=QuicConnectionProtocol,
+                create_protocol=HttpClient,
                 session_ticket_handler=self.save_session_ticket,
                 local_port=0,  # Replace with desired local port if needed
                 wait_connected=True,
-            )
-            self.connections[key] = connection
+            ) as connection:
+                await connection.wait_connected()
+                self.connections[key] = connection
         self.last_used[key] = time.time()
         return self.connections[key]
 
@@ -398,10 +399,9 @@ class RoundTripper:
     def _default_save_session_ticket(self, ticket: SessionTicket) -> None:
         # Implement session ticket saving logic if needed
         # TODO 
-        logger.info("New session ticket received -  TODO")
-        # if args.session_ticket:
-        #     with open(args.session_ticket, "wb") as fp:
-        #         pickle.dump(ticket, fp)
+        logger.info("New session ticket received")
+        with open("client_session_ticket.bin", "wb") as fp:
+            pickle.dump(ticket, fp)
 
     async def send_datagram(self, data: bytes, host: str, port: int):
         client = await self._get_or_create_client(host, port)

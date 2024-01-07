@@ -73,8 +73,16 @@ class Conversation:
     def __str__(self) -> str:
         return f"Conversation {self.conversation_id}, {self.control_stream}, {self.channels_accept_queue}, {self.stream_creator}, {self.max_packet_size}, {self.default_datagrams_queue_size}, {self.channels_manager}"
     
-    def accept_channel(self):
-        pass
+    async def accept_channel(self):
+        while True:
+            if not self.channels_accept_queue.empty():
+                channel = await self.channels_accept_queue.get()
+                channel.confirm_channel(self.max_packet_size)
+                self.channels_manager.add_channel(channel)
+                return channel
+            else:
+                await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
+
     
     async def establish_client_conversation(self, request:HttpRequest, round_tripper: RoundTripper):
         log.debug(f"establish_client_conversation function called with request: {request}, round_tripper: {round_tripper}")
@@ -146,7 +154,8 @@ class Conversation:
                         server_version = v.decode('utf-8')
                         major, minor, patch = parse_version(server_version)
                         log.debug(f"Established conversation with server: {server_version}")
-                # TODO if status == -1 etc
+                if major == -1 or minor == -1 or patch == -1:
+                    raise Exception(f"Could not parse server version: {server_version}")
                 if status == 200: # TODO
                     self.control_stream = http_event.http_stream
                     self.stream_creator = http_event.stream_creator
